@@ -16,6 +16,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.setPadding
 import org.json.JSONArray
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -43,6 +44,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        PDFBoxResourceLoader.init(applicationContext)
         store = GiveawayStore(this)
         giveaways += store.load()
         showDashboard()
@@ -217,7 +219,7 @@ class MainActivity : AppCompatActivity() {
 
         val ioRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         ioRow.addView(Ui.button(this, "PASTE LIST", true).apply { setOnClickListener { pasteListDialog(g) } }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(4) })
-        ioRow.addView(Ui.button(this, "IMPORT FILE", true).apply { setOnClickListener { pendingImportId = g.id; openText.launch(arrayOf("text/plain", "text/csv", "application/json")) } }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+        ioRow.addView(Ui.button(this, "IMPORT FILE", true).apply { setOnClickListener { pendingImportId = g.id; openText.launch(arrayOf("text/plain", "text/csv", "application/json", "application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/octet-stream")) } }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
         ioRow.addView(Ui.button(this, "EXPORT", true).apply { setOnClickListener { pendingExportId = g.id; createExport.launch(safeFileName(g.title) + ".csv") } }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(4) })
         body.addView(ioRow, marginTop(10))
 
@@ -278,6 +280,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun parseEntries(text: String): List<EntryGroup> = text.lineSequence().mapNotNull { raw ->
         val line = raw.trim(); if (line.isBlank()) return@mapNotNull null
+        val normalizedHeader = line.lowercase(Locale.ROOT).replace("_", " ")
+        if (normalizedHeader in setOf("name", "name,entries", "name,quantity", "participant name", "participant name,entries", "participant name,quantity")) return@mapNotNull null
         val csv = line.split(",", limit = 2)
         val xMatch = Regex("^(.*?)(?:\\s+[xX×](\\d+))$").matchEntire(line)
         when {
@@ -330,15 +334,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun importFromUri(uri: Uri) {
         val g = giveaways.firstOrNull { it.id == pendingImportId } ?: return
-        val text = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: return toast("Could not read file")
-        val parsed = if (text.trim().startsWith("[")) {
-            runCatching {
-                val a = JSONArray(text); (0 until a.length()).map { i ->
-                    val o = a.getJSONObject(i); EntryGroup(name = o.optString("name"), quantity = o.optInt("quantity", 1).coerceAtLeast(1))
+        toast("Reading file…")
+        Thread {
+            val result = runCatching { DocumentEntryImporter(this).read(uri) }
+            runOnUiThread {
+                result.onSuccess { importedText ->
+                    val parsed = if (importedText.trim().startsWith("[")) {
+                        runCatching {
+                            val a = JSONArray(importedText)
+                            (0 until a.length()).map { i ->
+                                val o = a.getJSONObject(i)
+                                EntryGroup(
+                                    name = o.optString("name"),
+                                    quantity = o.optInt("quantity", 1).coerceAtLeast(1)
+                                )
+                            }
+                        }.getOrElse { parseEntries(importedText) }
+                    } else {
+                        parseEntries(importedText)
+                    }
+                    val usable = parsed.filter { it.name.isNotBlank() }
+                    if (usable.isEmpty()) {
+                        toast("No names were found in that file")
+                    } else {
+                        g.entries += usable
+                        persist()
+                        showEditor(g.id)
+                        toast("Imported ${usable.sumOf { it.quantity }} entries")
+                    }
+                }.onFailure { error ->
+                    toast(error.message ?: "Could not read file")
                 }
-            }.getOrElse { parseEntries(text) }
-        } else parseEntries(text)
-        g.entries += parsed.filter { it.name.isNotBlank() }; persist(); showEditor(g.id); toast("Imported ${parsed.sumOf { it.quantity }} entries")
+            }
+        }.start()
     }
 
     private fun exportToUri(uri: Uri) {

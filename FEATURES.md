@@ -22,3 +22,9 @@
 - Save result to winner history
 - Remove the exact winning chance
 - Generate a five-second MP4 result video for the phone gallery
+
+## Wheel display update
+- Every unique entrant name is rendered on the wheel.
+- Duplicate entries are merged into one proportionally larger slice.
+- Each numbered ticket still has an equal chance of winning.
+- Names scale automatically for large entrant lists.
