@@ -26,7 +26,18 @@ class RaffleView @JvmOverloads constructor(context: Context, attrs: AttributeSet
         ValueAnimator.ofFloat(0f,1f).apply {
             duration = 5000; interpolator = DecelerateInterpolator()
             addUpdateListener { progress = it.animatedValue as Float; invalidate() }
-            doOnEndCompat { drawing=false; onWinner(active!!); invalidate() }
+            addListener(object : android.animation.Animator.AnimatorListener {
+                override fun onAnimationStart(animation: android.animation.Animator) = Unit
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    drawing = false
+                    active?.let(onWinner)
+                    invalidate()
+                }
+                override fun onAnimationCancel(animation: android.animation.Animator) {
+                    drawing = false
+                }
+                override fun onAnimationRepeat(animation: android.animation.Animator) = Unit
+            })
             start()
         }
     }

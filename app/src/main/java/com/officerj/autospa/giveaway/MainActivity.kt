@@ -122,7 +122,7 @@ class MainActivity : AppCompatActivity() {
             giveaways.sortedByDescending { it.createdAt }.forEach { g -> body.addView(giveawayCard(g), marginTop(10)) }
         }
         scroll.addView(body)
-        root.addView(scroll, LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
     }
 
@@ -236,7 +236,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         scroll.addView(body)
-        root.addView(scroll, LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
     }
 

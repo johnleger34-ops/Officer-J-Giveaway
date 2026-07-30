@@ -55,7 +55,7 @@ object Ui {
         setHintTextColor(MUTED)
         setTextColor(SILVER)
         textSize = 15f
-        singleLine = true
+        setSingleLine(true)
         background = bg(PANEL, c.dp(8), c.dp(1), 0xFF24436E.toInt())
         setPadding(c.dp(12), 0, c.dp(12), 0)
         minHeight = c.dp(48)
