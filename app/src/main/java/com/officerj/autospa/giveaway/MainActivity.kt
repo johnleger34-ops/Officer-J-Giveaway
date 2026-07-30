@@ -304,12 +304,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun showWinnerActions(g: Giveaway, result: WinnerResult) {
         AlertDialog.Builder(this).setTitle("Result saved")
-            .setMessage("Save a five-second Officer J branded result video to your phone gallery?")
+            .setMessage("Save an eight-second Officer J branded result video to your phone gallery?")
             .setNegativeButton("Later") { _, _ -> showEditor(g.id) }
             .setPositiveButton("CREATE VIDEO") { _, _ ->
                 toast("Creating video. Keep the app open.")
                 Thread {
-                    val saved = runCatching { WinnerVideoExporter(this, g.type, g.title, result).export() }.getOrNull()
+                    val saved = runCatching { WinnerVideoExporter(this, g.type, g.title, result, g.expandedTickets()).export() }.getOrNull()
                     runOnUiThread {
                         if (saved != null) toast("Video saved to gallery") else toast("Video could not be created on this device")
                         showEditor(g.id)

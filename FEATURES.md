@@ -28,3 +28,11 @@
 - Duplicate entries are merged into one proportionally larger slice.
 - Each numbered ticket still has an equal chance of winning.
 - Names scale automatically for large entrant lists.
+
+## Winner video export fix
+- Exported wheel now uses the actual giveaway ticket list.
+- Duplicate names are grouped into weighted slices, matching the live wheel odds.
+- Entrant names are drawn on the exported wheel.
+- The selected winner finishes directly under the pointer.
+- Video duration increased to eight seconds: five-second spin plus result hold.
+- Winner banner appears only after the wheel stops.
