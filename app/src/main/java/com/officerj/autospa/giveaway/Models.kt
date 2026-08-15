@@ -9,11 +9,12 @@ enum class GiveawayType { WHEEL, RAFFLE }
 data class EntryGroup(
     val id: String = UUID.randomUUID().toString(),
     var name: String,
-    var quantity: Int
+    var quantity: Int,
+    var bonusWeight: Double = 0.0
 ) {
-    fun toJson() = JSONObject().put("id", id).put("name", name).put("quantity", quantity)
+    fun toJson() = JSONObject().put("id", id).put("name", name).put("quantity", quantity).put("bonusWeight", bonusWeight)
     companion object {
-        fun fromJson(o: JSONObject) = EntryGroup(o.optString("id", UUID.randomUUID().toString()), o.optString("name"), o.optInt("quantity", 1).coerceAtLeast(1))
+        fun fromJson(o: JSONObject) = EntryGroup(o.optString("id", UUID.randomUUID().toString()), o.optString("name"), o.optInt("quantity", 1).coerceAtLeast(1), o.optDouble("bonusWeight", 0.0).coerceAtLeast(0.0))
     }
 }
 

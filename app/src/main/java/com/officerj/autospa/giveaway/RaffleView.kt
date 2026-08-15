@@ -19,10 +19,10 @@ class RaffleView @JvmOverloads constructor(context: Context, attrs: AttributeSet
     private var active: Pair<Int,String>? = null
     var drawing = false; private set
 
-    fun drawWinner(onWinner: (Pair<Int,String>) -> Unit) {
+    fun drawWinner(forcedTicket: Pair<Int,String>? = null, onWinner: (Pair<Int,String>) -> Unit) {
         if (drawing || tickets.isEmpty()) return
         drawing = true
-        active = tickets[Random.nextInt(tickets.size)]
+        active = forcedTicket?.takeIf { target -> tickets.any { it.first == target.first } } ?: tickets[Random.nextInt(tickets.size)]
         ValueAnimator.ofFloat(0f,1f).apply {
             duration = 5000; interpolator = DecelerateInterpolator()
             addUpdateListener { progress = it.animatedValue as Float; invalidate() }
