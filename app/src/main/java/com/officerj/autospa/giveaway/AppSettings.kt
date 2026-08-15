@@ -10,7 +10,7 @@ class AppSettings(context: Context) {
         set(value) = prefs.edit().putString("provider", value).apply()
 
     var metaApiVersion: String
-        get() = prefs.getString("meta_api_version", "v23.0") ?: "v23.0"
+        get() = prefs.getString("meta_api_version", "v26.0") ?: "v26.0"
         set(value) = prefs.edit().putString("meta_api_version", value).apply()
 
     var accessToken: String

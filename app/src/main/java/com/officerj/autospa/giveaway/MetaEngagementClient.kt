@@ -37,21 +37,37 @@ class MetaEngagementClient(private val settings: AppSettings) {
 
         val reactions = linkedMapOf<String, String>()
         val comments = linkedMapOf<String, String>()
+
+        // Meta v26 can reject explicit identity fields on some post types (especially
+        // personal-profile posts). Read the edge using its default fields first, then
+        // preserve any participant identity Meta actually returns.
         val reactionStatus = runCatching {
-            readPaged("${resolved.id}/reactions", token, "id,name") { o ->
-                val id = o.optString("id"); val name = o.optString("name")
-                if (id.isNotBlank()) reactions[id] = name.ifBlank { id }
+            val rawCount = readPaged("${resolved.id}/reactions", token, null) { o ->
+                val id = o.optString("id")
+                val name = o.optString("name")
+                if (id.isNotBlank() && name.isNotBlank()) reactions[id] = name
             }
-            "Loaded ${reactions.size}"
+            when {
+                rawCount == 0 -> "Loaded 0"
+                reactions.size == rawCount -> "Loaded $rawCount"
+                reactions.isNotEmpty() -> "Counted $rawCount; ${reactions.size} participant identities available"
+                else -> "Counted $rawCount; Facebook withheld participant identities"
+            }
         }.getOrElse { "Unavailable: ${cleanError(it.message)}" }
 
         val commentStatus = runCatching {
-            readPaged("${resolved.id}/comments", token, "from,message") { o ->
+            val rawCount = readPaged("${resolved.id}/comments", token, null) { o ->
                 val from = o.optJSONObject("from")
-                val id = from?.optString("id").orEmpty(); val name = from?.optString("name").orEmpty()
-                if (id.isNotBlank()) comments[id] = name.ifBlank { id }
+                val id = from?.optString("id").orEmpty()
+                val name = from?.optString("name").orEmpty()
+                if (id.isNotBlank() && name.isNotBlank()) comments[id] = name
             }
-            "Loaded ${comments.size}"
+            when {
+                rawCount == 0 -> "Loaded 0"
+                comments.size == rawCount -> "Loaded $rawCount"
+                comments.isNotEmpty() -> "Counted $rawCount; ${comments.size} commenter identities available"
+                else -> "Counted $rawCount; Facebook withheld commenter identities"
+            }
         }.getOrElse { "Unavailable: ${cleanError(it.message)}" }
 
         return ScanResult(
@@ -158,17 +174,26 @@ class MetaEngagementClient(private val settings: AppSettings) {
         }.getOrElse { startUrl to "Redirect lookup failed: ${cleanError(it.message)}" }
     }
 
-    private fun readPaged(path: String, token: String, fields: String, consume: (JSONObject) -> Unit) {
-        var next: String? = graphUrl("$path?limit=100&fields=${URLEncoder.encode(fields, "UTF-8")}") + "&access_token=${URLEncoder.encode(token, "UTF-8")}" 
+    private fun readPaged(path: String, token: String, fields: String?, consume: (JSONObject) -> Unit): Int {
+        val query = buildString {
+            append("$path?limit=100")
+            if (!fields.isNullOrBlank()) append("&fields=${URLEncoder.encode(fields, "UTF-8")}")
+        }
+        var next: String? = graphUrl(query) + "&access_token=${URLEncoder.encode(token, "UTF-8")}"
         var pages = 0
+        var total = 0
         while (!next.isNullOrBlank() && pages++ < 100) {
             val root = getJsonAbsolute(next)
             val error = root.optJSONObject("error")
             if (error != null) throw IllegalStateException(error.optString("message", "Meta API error"))
             val data = root.optJSONArray("data")
-            if (data != null) for (i in 0 until data.length()) consume(data.getJSONObject(i))
+            if (data != null) {
+                total += data.length()
+                for (i in 0 until data.length()) consume(data.getJSONObject(i))
+            }
             next = root.optJSONObject("paging")?.optString("next")?.takeIf { it.isNotBlank() }
         }
+        return total
     }
 
     private fun getJson(path: String, token: String): JSONObject {

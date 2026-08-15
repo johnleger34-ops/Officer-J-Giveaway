@@ -490,7 +490,24 @@ class MainActivity : AppCompatActivity() {
         }, marginTop(12))
 
         body.addView(Ui.text(this, "PEOPLE", 18f, Ui.SILVER, true), marginTop(18))
-        if (scan.participants.isEmpty()) body.addView(Ui.text(this, "No engagement data yet.", 14f, Ui.MUTED), marginTop(8))
+        val manualName = Ui.input(this, "Add a person manually when Facebook withholds identity")
+        body.addView(Ui.card(this).apply {
+            addView(Ui.text(this@MainActivity, "MANUAL VERIFICATION FALLBACK", 14f, Ui.SILVER, true))
+            addView(Ui.text(this@MainActivity, "Facebook can return engagement counts without exposing who performed them. Add a person here and mark only the interactions you can verify.", 12f, Ui.MUTED))
+            addView(manualName, marginTop(8))
+            addView(Ui.button(this@MainActivity, "ADD PERSON").apply {
+                setOnClickListener {
+                    val name = manualName.text.toString().trim()
+                    if (name.isBlank()) return@setOnClickListener toast("Enter a name")
+                    val existing = scan.participants.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                    if (existing == null) {
+                        scan.participants += EngagementParticipant(id = "manual_${System.currentTimeMillis()}", name = name, source = "Manual verification")
+                        scan.lastScan = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id)
+                    } else toast("That person is already in this verification list")
+                }
+            }, marginTop(8))
+        }, marginTop(8))
+        if (scan.participants.isEmpty()) body.addView(Ui.text(this, "No identifiable engagement data yet. Facebook may still have returned counts above.", 14f, Ui.MUTED), marginTop(8))
         else scan.participants.sortedWith(compareByDescending<EngagementParticipant> { it.verifiedCount }.thenBy { it.name.lowercase() }).forEach { p ->
             body.addView(participantCard(g, scan, p), marginTop(8))
         }
@@ -557,12 +574,29 @@ class MainActivity : AppCompatActivity() {
         title.addView(Ui.text(this, label, 12f, if (eligibility == Eligibility.NOT_ELIGIBLE) Ui.RED else Ui.BLUE, true))
         card.addView(title)
         card.addView(Ui.text(this, "Reaction ${stateIcon(p.reacted)}   Comment ${stateIcon(p.commented)}   Follow ${stateIcon(p.followsPage)}", 13f, Ui.MUTED), marginTop(5))
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(Ui.button(this, "FOLLOW ✓", true).apply { setOnClickListener { p.followsPage = VerificationState.VERIFIED; p.updatedAt = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id) } }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(3) })
-        row.addView(Ui.button(this, "FOLLOW ?", true).apply { setOnClickListener { p.followsPage = VerificationState.UNKNOWN; p.updatedAt = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id) } }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
-        row.addView(Ui.button(this, "FOLLOW ✕", true).apply { setOnClickListener { p.followsPage = VerificationState.NOT_FOUND; p.updatedAt = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id) } }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(3) })
-        card.addView(row, marginTop(8))
+
+        card.addView(verificationRow("REACTION", p.reacted) { value ->
+            p.reacted = value; p.updatedAt = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id)
+        }, marginTop(8))
+        card.addView(verificationRow("COMMENT", p.commented) { value ->
+            p.commented = value; p.updatedAt = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id)
+        }, marginTop(5))
+        card.addView(verificationRow("FOLLOW", p.followsPage) { value ->
+            p.followsPage = value; p.updatedAt = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id)
+        }, marginTop(5))
         return card
+    }
+
+    private fun verificationRow(label: String, current: VerificationState, setValue: (VerificationState) -> Unit): View {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        row.addView(Ui.text(this, label, 11f, Ui.MUTED, true), LinearLayout.LayoutParams(dp(78), LinearLayout.LayoutParams.WRAP_CONTENT))
+        fun stateButton(text: String, state: VerificationState): View = Ui.button(this, text, current == state).apply {
+            setOnClickListener { setValue(state) }
+        }
+        row.addView(stateButton("✓", VerificationState.VERIFIED), LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(3) })
+        row.addView(stateButton("?", VerificationState.UNKNOWN), LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
+        row.addView(stateButton("✕", VerificationState.NOT_FOUND), LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(3) })
+        return row
     }
 
     private fun addEligibleToGiveaway(g: Giveaway, scan: EngagementScan) {
