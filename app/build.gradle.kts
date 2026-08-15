@@ -30,6 +30,7 @@ android {
 }
 
 dependencies {
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.10.0")
