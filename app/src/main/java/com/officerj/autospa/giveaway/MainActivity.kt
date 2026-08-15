@@ -468,6 +468,10 @@ class MainActivity : AppCompatActivity() {
 
         body.addView(Ui.card(this).apply {
             addView(Ui.text(this@MainActivity, "SCAN STATUS", 17f, Ui.SILVER, true))
+            addView(Ui.text(this@MainActivity, "Post: ${scan.resolutionStatus}", 13f, statusColor(scan.resolutionStatus)))
+            if (scan.resolvedUrl.isNotBlank() && scan.resolvedUrl != scan.postUrl) {
+                addView(Ui.text(this@MainActivity, "Resolved URL: ${scan.resolvedUrl.take(110)}", 11f, Ui.MUTED))
+            }
             addView(Ui.text(this@MainActivity, "Reactions: ${scan.reactionStatus}", 13f, statusColor(scan.reactionStatus)))
             addView(Ui.text(this@MainActivity, "Comments: ${scan.commentStatus}", 13f, statusColor(scan.commentStatus)))
             addView(Ui.text(this@MainActivity, "Page follow: ${scan.followerStatus}", 13f, Ui.MUTED))
@@ -502,7 +506,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(box)
         thread {
             val result = runCatching { MetaEngagementClient(settingsStore).scan(scan.postUrl) }.getOrElse {
-                MetaEngagementClient.ScanResult("", emptyMap(), emptyMap(), "Unavailable: ${it.message ?: "error"}", "Unavailable: ${it.message ?: "error"}", "Unavailable")
+                MetaEngagementClient.ScanResult("", scan.postUrl, "Scanner error: ${it.message ?: "error"}", emptyMap(), emptyMap(), "Unavailable: ${it.message ?: "error"}", "Unavailable: ${it.message ?: "error"}", "Unavailable")
             }
             mergeScanResult(scan, result)
             saveEngagement()
@@ -512,6 +516,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun mergeScanResult(scan: EngagementScan, result: MetaEngagementClient.ScanResult) {
         scan.postObjectId = result.postId
+        scan.resolvedUrl = result.resolvedUrl
+        scan.resolutionStatus = result.resolutionStatus
         scan.reactionStatus = result.reactionStatus
         scan.commentStatus = result.commentStatus
         scan.followerStatus = result.followerStatus

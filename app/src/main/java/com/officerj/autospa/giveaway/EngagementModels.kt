@@ -55,6 +55,8 @@ data class EngagementScan(
     var postUrl: String = "",
     var postObjectId: String = "",
     val participants: MutableList<EngagementParticipant> = mutableListOf(),
+    var resolutionStatus: String = "Not scanned",
+    var resolvedUrl: String = "",
     var reactionStatus: String = "Not scanned",
     var commentStatus: String = "Not scanned",
     var followerStatus: String = "Not scanned",
@@ -62,6 +64,7 @@ data class EngagementScan(
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("postUrl", postUrl).put("postObjectId", postObjectId)
+        .put("resolutionStatus", resolutionStatus).put("resolvedUrl", resolvedUrl)
         .put("reactionStatus", reactionStatus).put("commentStatus", commentStatus).put("followerStatus", followerStatus)
         .put("lastScan", lastScan)
         .put("participants", JSONArray().apply { participants.forEach { put(it.toJson()) } })
@@ -70,6 +73,8 @@ data class EngagementScan(
         fun fromJson(o: JSONObject): EngagementScan {
             val scan = EngagementScan(
                 postUrl = o.optString("postUrl"), postObjectId = o.optString("postObjectId"),
+                resolutionStatus = o.optString("resolutionStatus", "Not scanned"),
+                resolvedUrl = o.optString("resolvedUrl"),
                 reactionStatus = o.optString("reactionStatus", "Not scanned"),
                 commentStatus = o.optString("commentStatus", "Not scanned"),
                 followerStatus = o.optString("followerStatus", "Not scanned"),
