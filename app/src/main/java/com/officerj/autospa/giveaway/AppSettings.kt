@@ -14,11 +14,11 @@ class AppSettings(context: Context) {
         set(value) = prefs.edit().putString("meta_api_version", value).apply()
 
     var accessToken: String
-        get() = prefs.getString("access_token", "") ?: ""
+        get() = prefs.getString("access_token", DEFAULT_ACCESS_TOKEN).orEmpty().ifBlank { DEFAULT_ACCESS_TOKEN }
         set(value) = prefs.edit().putString("access_token", value).apply()
 
     var pageId: String
-        get() = prefs.getString("page_id", "") ?: ""
+        get() = prefs.getString("page_id", DEFAULT_PAGE_ID).orEmpty().ifBlank { DEFAULT_PAGE_ID }
         set(value) = prefs.edit().putString("page_id", value).apply()
 
     var defaultPostUrl: String
@@ -48,4 +48,10 @@ class AppSettings(context: Context) {
     var autoCheckUpdates: Boolean
         get() = prefs.getBoolean("auto_check_updates", false)
         set(value) = prefs.edit().putBoolean("auto_check_updates", value).apply()
+
+    companion object {
+        // User-requested embedded defaults. Settings can still override either value in-app.
+        const val DEFAULT_PAGE_ID = "88834713103428"
+        const val DEFAULT_ACCESS_TOKEN = "EAAZAGj6PnHQMBSLBbwuYJpjC5eLdkBk6ROG9ZCKua9OrOIDRh7Vxij3dlAxtv5rRkyLRFlkfkncGuyJbMeVuLZAlSBwkkXAFZAJWGXWMWFVhwhEKGUrZAOb5tFJh54TDYN6Ge70HzkH24QZBJsi3R3sPIRZBDkeMZAm5ZCXQJ4B0IkbjoyF7zwWrwxgCB3Cv4Qt8ELC8YGXklHCZAaMLnxZCbZBZA27cP8qqoq404Y9vZBHtHgYPJHbwY9Sb6sXgZDZD"
+    }
 }

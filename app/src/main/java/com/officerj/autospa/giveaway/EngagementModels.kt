@@ -64,6 +64,7 @@ data class EngagementScan(
     var objectStatus: String = "Not inspected",
     var reactionSummaryCount: Int? = null,
     var commentSummaryCount: Int? = null,
+    var diagnosticLog: String = "",
     var lastScan: Long = 0L
 ) {
     fun toJson(): JSONObject = JSONObject()
@@ -72,6 +73,7 @@ data class EngagementScan(
         .put("reactionStatus", reactionStatus).put("commentStatus", commentStatus).put("followerStatus", followerStatus)
         .put("objectType", objectType).put("objectStatus", objectStatus)
         .put("reactionSummaryCount", reactionSummaryCount).put("commentSummaryCount", commentSummaryCount)
+        .put("diagnosticLog", diagnosticLog)
         .put("lastScan", lastScan)
         .put("participants", JSONArray().apply { participants.forEach { put(it.toJson()) } })
 
@@ -88,6 +90,7 @@ data class EngagementScan(
                 objectStatus = o.optString("objectStatus", "Not inspected"),
                 reactionSummaryCount = if (o.has("reactionSummaryCount") && !o.isNull("reactionSummaryCount")) o.optInt("reactionSummaryCount") else null,
                 commentSummaryCount = if (o.has("commentSummaryCount") && !o.isNull("commentSummaryCount")) o.optInt("commentSummaryCount") else null,
+                diagnosticLog = o.optString("diagnosticLog"),
                 lastScan = o.optLong("lastScan")
             )
             val a = o.optJSONArray("participants") ?: JSONArray()

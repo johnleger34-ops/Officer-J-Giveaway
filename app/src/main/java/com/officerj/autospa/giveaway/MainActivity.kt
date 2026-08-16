@@ -2,6 +2,9 @@ package com.officerj.autospa.giveaway
 
 import android.app.Activity
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -31,6 +34,7 @@ class MainActivity : AppCompatActivity() {
     private var currentId: String? = null
     private var pendingImportId: String? = null
     private var pendingExportId: String? = null
+    private var pendingDiagnosticLog: String = ""
 
     private val openText = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) importFromUri(uri)
@@ -43,6 +47,14 @@ class MainActivity : AppCompatActivity() {
     }
     private val openBackup = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) restoreBackup(uri)
+    }
+    private val createDiagnosticLog = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null && pendingDiagnosticLog.isNotBlank()) {
+            runCatching {
+                contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(pendingDiagnosticLog) }
+            }.onSuccess { toast("Diagnostic log saved") }
+             .onFailure { toast("Could not save log: ${it.message}") }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -484,6 +496,30 @@ class MainActivity : AppCompatActivity() {
             addView(Ui.text(this@MainActivity, "Page follow: ${scan.followerStatus}", 13f, Ui.MUTED))
         }, marginTop(12))
 
+        if (scan.diagnosticLog.isNotBlank()) {
+            body.addView(Ui.card(this).apply {
+                addView(Ui.text(this@MainActivity, "FULL META COMPATIBILITY LOG", 17f, Ui.SILVER, true))
+                addView(Ui.text(this@MainActivity, "The scan continues through compatible checks even when another check fails.", 12f, Ui.MUTED))
+                addView(Ui.text(this@MainActivity, scan.diagnosticLog.take(7000), 10f, Ui.MUTED), marginTop(8))
+                val buttons = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                buttons.addView(Ui.button(this@MainActivity, "COPY LOG", true).apply {
+                    setOnClickListener {
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Officer J Meta diagnostic", scan.diagnosticLog))
+                        toast("Diagnostic log copied")
+                    }
+                }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) })
+                buttons.addView(Ui.button(this@MainActivity, "DOWNLOAD LOG").apply {
+                    setOnClickListener {
+                        pendingDiagnosticLog = scan.diagnosticLog
+                        val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
+                        createDiagnosticLog.launch("OfficerJ-Meta-Diagnostic-$stamp.txt")
+                    }
+                }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
+                addView(buttons, marginTop(9))
+            }, marginTop(12))
+        }
+
         val eligible = scan.participants.count { it.eligibility(settingsStore) != Eligibility.NOT_ELIGIBLE }
         val bonus = scan.participants.count { it.eligibility(settingsStore) == Eligibility.BONUS }
         body.addView(Ui.card(this).apply {
@@ -549,6 +585,7 @@ class MainActivity : AppCompatActivity() {
         scan.objectStatus = result.objectStatus
         scan.reactionSummaryCount = result.reactionSummaryCount
         scan.commentSummaryCount = result.commentSummaryCount
+        scan.diagnosticLog = result.diagnosticLog
         val byId = scan.participants.associateBy { it.id }.toMutableMap()
         val ids = linkedSetOf<String>().apply { addAll(result.reactions.keys); addAll(result.comments.keys) }
         ids.forEach { id ->
@@ -641,7 +678,7 @@ class MainActivity : AppCompatActivity() {
         val defaultUrl = Ui.input(this, "Default giveaway post URL").apply { setText(settingsStore.defaultPostUrl) }
         body.addView(Ui.card(this).apply {
             addView(Ui.text(this@MainActivity, "FACEBOOK / DATA PROVIDER", 18f, Ui.SILVER, true))
-            addView(Ui.text(this@MainActivity, "Nothing here is hard-coded. Provider details can be corrected without rewriting the giveaway engine.", 12f, Ui.MUTED))
+            addView(Ui.text(this@MainActivity, "Page credentials are prefilled for this private app. Tap Edit here any time you need to replace them without rewriting the giveaway engine.", 12f, Ui.MUTED))
             addView(provider, marginTop(9)); addView(apiVersion, marginTop(7)); addView(pageId, marginTop(7)); addView(token, marginTop(7)); addView(defaultUrl, marginTop(7))
         })
 
