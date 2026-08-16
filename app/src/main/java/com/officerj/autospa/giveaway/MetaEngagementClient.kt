@@ -339,12 +339,28 @@ class MetaEngagementClient(private val settings: AppSettings) {
 
     private fun getJsonAbsolute(urlString: String): JSONObject {
         val conn = URL(urlString).openConnection() as HttpURLConnection
-        conn.connectTimeout = 12000; conn.readTimeout = 18000; conn.requestMethod = "GET"
+        conn.connectTimeout = 12000
+        conn.readTimeout = 18000
+        conn.requestMethod = "GET"
+        conn.setRequestProperty("Accept", "application/json")
+        conn.setRequestProperty("User-Agent", "OfficerJGiveaway/1.1.5 Android")
+
         val code = conn.responseCode
+        val contentType = conn.contentType.orEmpty()
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
         val text = stream?.let { BufferedReader(InputStreamReader(it)).use { reader -> reader.readText() } }.orEmpty()
         conn.disconnect()
-        val obj = JSONObject(text.ifBlank { "{}" })
+
+        val obj = try {
+            JSONObject(text.ifBlank { "{}" })
+        } catch (e: Exception) {
+            val preview = sanitizeResponsePreview(text)
+            throw IllegalStateException(
+                "Invalid JSON from Meta (HTTP $code${if (contentType.isNotBlank()) ", $contentType" else ""}). " +
+                    "Response preview: $preview"
+            )
+        }
+
         if (code !in 200..299) {
             val msg = obj.optJSONObject("error")?.optString("message") ?: "HTTP $code"
             throw IllegalStateException(msg)
@@ -352,6 +368,17 @@ class MetaEngagementClient(private val settings: AppSettings) {
         return obj
     }
 
+    private fun sanitizeResponsePreview(value: String): String {
+        if (value.isBlank()) return "<empty response>"
+        return value
+            .replace(Regex("""access_token=[^&"\'\s<>]+""", RegexOption.IGNORE_CASE), "access_token=<redacted>")
+            .replace(Regex("EA[A-Za-z0-9_-]{20,}"), "<token-redacted>")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+            .take(280)
+            .ifBlank { "<empty response>" }
+    }
+
     private fun errorSuffix(value: String): String = if (value.isBlank() || value == "Unknown error") "" else " ($value)"
-    private fun cleanError(value: String?) = value.orEmpty().replace('\n', ' ').take(160).ifBlank { "Unknown error" }
+    private fun cleanError(value: String?) = value.orEmpty().replace('\n', ' ').take(420).ifBlank { "Unknown error" }
 }
