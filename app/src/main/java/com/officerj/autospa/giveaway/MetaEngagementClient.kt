@@ -25,6 +25,7 @@ class MetaEngagementClient(private val settings: AppSettings) {
     )
 
     private data class ResolvedPost(val id: String, val url: String, val status: String)
+    private data class PagePost(val id: String, val permalink: String, val createdTime: String)
 
     fun scan(postUrl: String): ScanResult {
         val token = settings.accessToken.trim()
@@ -36,22 +37,20 @@ class MetaEngagementClient(private val settings: AppSettings) {
         val resolved = resolvePost(postUrl, token)
         if (resolved.id.isBlank()) return ScanResult(
             "", resolved.url, resolved.status,
-            emptyMap(), emptyMap(), "Not scanned: ${resolved.status}", "Not scanned: ${resolved.status}", "Unavailable"
+            emptyMap(), emptyMap(),
+            "Not scanned: no valid Graph post ID", "Not scanned: no valid Graph post ID",
+            "Individual follower lookup is not exposed reliably; manual verification remains available",
+            objectType = "Unresolved",
+            objectStatus = "No valid Graph post node was identified"
         )
 
         val reactions = linkedMapOf<String, String>()
         val comments = linkedMapOf<String, String>()
 
-        // Diagnostic pass: inspect the resolved Graph node and request edge summaries
-        // independently. This lets the UI distinguish a wrong/limited Graph object from
-        // a real zero-engagement result without making the scan fail.
         val objectInspection = inspectObject(resolved.id, token)
         val reactionSummary = readSummaryCount(resolved.id, "reactions", token)
         val commentSummary = readSummaryCount(resolved.id, "comments", token)
 
-        // Meta v26 can reject explicit identity fields on some post types (especially
-        // personal-profile posts). Read the edge using its default fields first, then
-        // preserve any participant identity Meta actually returns.
         val reactionStatus = runCatching {
             val rawCount = readPaged("${resolved.id}/reactions", token, null) { o ->
                 val id = o.optString("id")
@@ -106,7 +105,7 @@ class MetaEngagementClient(private val settings: AppSettings) {
     private fun resolvePost(postUrl: String, token: String): ResolvedPost {
         val raw = postUrl.trim()
         if (raw.isBlank()) return ResolvedPost("", "", "No post link entered")
-        if (raw.matches(Regex("^[0-9_]+$"))) return ResolvedPost(raw, raw, "Graph post ID supplied")
+        if (isGraphPostId(raw)) return ResolvedPost(raw, raw, "Graph post ID supplied")
 
         parseDirectPostId(raw)?.let { return ResolvedPost(it, raw, "Direct Facebook post link recognized") }
 
@@ -123,11 +122,12 @@ class MetaEngagementClient(private val settings: AppSettings) {
             candidateUrl = redirect.first
             redirectNote = redirect.second
             parseDirectPostId(candidateUrl)?.let {
-                return ResolvedPost(it, candidateUrl, "Share link resolved to Facebook post")
+                return ResolvedPost(it, candidateUrl, "Share link redirected to a canonical Facebook post")
             }
         }
 
-        // Graph URL lookup can resolve some public/Page URLs. Modern personal-profile posts may be denied.
+        // Facebook's URL lookup can legally return the URL itself as an Open Graph node ID.
+        // That is NOT a Facebook Post Graph ID and must never be used for /reactions or /comments.
         val urlsToTry = linkedSetOf(candidateUrl, raw).filter { it.isNotBlank() }
         var lastError = ""
         for (candidate in urlsToTry) {
@@ -135,22 +135,108 @@ class MetaEngagementClient(private val settings: AppSettings) {
                 val encoded = URLEncoder.encode(candidate, "UTF-8")
                 getJson("?id=$encoded", token).optString("id")
             }
-            if (graphResult.isSuccess && graphResult.getOrNull().orEmpty().isNotBlank()) {
-                return ResolvedPost(graphResult.getOrThrow(), candidate,
-                    if (isShareLink) "Share link resolved through Meta" else "Post resolved through Meta")
+            val graphId = graphResult.getOrNull().orEmpty()
+            if (isGraphPostId(graphId)) {
+                return ResolvedPost(graphId, candidate,
+                    if (isShareLink) "Share link resolved to a real Graph post ID" else "Post resolved to a real Graph post ID")
             }
-            lastError = cleanError(graphResult.exceptionOrNull()?.message)
+            if (graphId.isNotBlank() && !isGraphPostId(graphId)) {
+                lastError = "Meta returned a URL/Open Graph node instead of a Facebook Post ID"
+            } else if (graphResult.isFailure) {
+                lastError = cleanError(graphResult.exceptionOrNull()?.message)
+            }
+        }
+
+        // Reliable Page fallback: enumerate recent posts owned by the configured Page and
+        // match the canonical permalink. This works for Page-owned posts and avoids treating
+        // facebook.com/share/... as a post object.
+        val pageId = settings.pageId.trim()
+        if (pageId.isNotBlank()) {
+            val discovery = runCatching { discoverPagePost(raw, candidateUrl, pageId, token) }
+            val found = discovery.getOrNull()
+            if (found != null) {
+                return ResolvedPost(found.id, found.permalink.ifBlank { candidateUrl },
+                    "Matched against recent posts owned by Officer J's Page")
+            }
+            if (discovery.isFailure) {
+                lastError = "Page post lookup failed: ${cleanError(discovery.exceptionOrNull()?.message)}"
+            } else {
+                val suffix = errorSuffix(lastError)
+                return ResolvedPost(
+                    "",
+                    candidateUrl,
+                    if (isShareLink) {
+                        "Share link is not mappable to a recent Officer J Page post. If the original giveaway was posted on your personal profile, the Page API cannot scan that profile-owned post.$suffix"
+                    } else {
+                        "Post was not found among recent posts owned by Officer J's Page. A personal-profile post is outside this Page token's readable Page content.$suffix"
+                    }
+                )
+            }
         }
 
         val status = when {
             isShareLink && redirectNote.startsWith("Resolved") ->
-                "Share link resolved, but Meta did not expose a post ID${errorSuffix(lastError)}"
+                "Share link redirected, but no valid Facebook Post Graph ID was exposed${errorSuffix(lastError)}"
             isShareLink ->
-                "Could not resolve Facebook share link${if (redirectNote.isNotBlank()) ": $redirectNote" else ""}${errorSuffix(lastError)}"
-            else -> "Could not resolve Facebook post${errorSuffix(lastError)}"
+                "Could not map Facebook share link to a valid Post Graph ID${if (redirectNote.isNotBlank()) ": $redirectNote" else ""}${errorSuffix(lastError)}"
+            else -> "Could not resolve Facebook post to a valid Graph post ID${errorSuffix(lastError)}"
         }
         return ResolvedPost("", candidateUrl, status)
     }
+
+    private fun discoverPagePost(rawUrl: String, candidateUrl: String, pageId: String, token: String): PagePost? {
+        val targets = linkedSetOf(normalizeFacebookUrl(rawUrl), normalizeFacebookUrl(candidateUrl)).filter { it.isNotBlank() }.toSet()
+        val numericHints = extractNumericHints(rawUrl) + extractNumericHints(candidateUrl)
+
+        var next: String? = graphUrl("$pageId/published_posts?fields=id,permalink_url,created_time&limit=100") +
+            "&access_token=${URLEncoder.encode(token, "UTF-8")}"
+        var pages = 0
+        while (!next.isNullOrBlank() && pages++ < 5) {
+            val root = getJsonAbsolute(next)
+            val data = root.optJSONArray("data")
+            if (data != null) {
+                for (i in 0 until data.length()) {
+                    val o = data.getJSONObject(i)
+                    val id = o.optString("id")
+                    val permalink = o.optString("permalink_url")
+                    val created = o.optString("created_time")
+                    if (!isGraphPostId(id)) continue
+                    val normalizedPermalink = normalizeFacebookUrl(permalink)
+                    val idTail = id.substringAfterLast('_')
+                    if ((normalizedPermalink.isNotBlank() && normalizedPermalink in targets) ||
+                        (idTail.isNotBlank() && idTail in numericHints) ||
+                        numericHints.any { hint -> hint.isNotBlank() && normalizedPermalink.contains(hint) }) {
+                        return PagePost(id, permalink, created)
+                    }
+                }
+            }
+            next = root.optJSONObject("paging")?.optString("next")?.takeIf { it.isNotBlank() }
+        }
+        return null
+    }
+
+    private fun normalizeFacebookUrl(value: String): String {
+        if (value.isBlank()) return ""
+        return runCatching {
+            val uri = URI(value.trim())
+            val host = uri.host.orEmpty().lowercase().removePrefix("www.").removePrefix("m.")
+            if (!host.endsWith("facebook.com")) return@runCatching value.trim().trimEnd('/')
+            val path = uri.path.orEmpty().replace(Regex("/+"), "/").trimEnd('/')
+            val query = uri.rawQuery.orEmpty()
+            val story = Regex("(?:^|&)story_fbid=([0-9]+)").find(query)?.groupValues?.getOrNull(1)
+            val owner = Regex("(?:^|&)id=([0-9]+)").find(query)?.groupValues?.getOrNull(1)
+            if (!story.isNullOrBlank() && !owner.isNullOrBlank()) {
+                "facebook.com/$owner/posts/$story"
+            } else {
+                "facebook.com$path"
+            }
+        }.getOrElse { value.trim().trimEnd('/') }
+    }
+
+    private fun extractNumericHints(value: String): Set<String> =
+        Regex("(?<![A-Za-z0-9])[0-9]{6,}(?![A-Za-z0-9])").findAll(value).map { it.value }.toSet()
+
+    private fun isGraphPostId(value: String): Boolean = value.matches(Regex("^[0-9]+_[0-9]+$"))
 
     private fun parseDirectPostId(raw: String): String? {
         val story = Regex("[?&]story_fbid=([0-9]+)").find(raw)?.groupValues?.getOrNull(1)
@@ -160,7 +246,6 @@ class MetaEngagementClient(private val settings: AppSettings) {
         val post = Regex("/(?:posts|videos)/([0-9]+)").find(raw)?.groupValues?.getOrNull(1)
         if (!post.isNullOrBlank() && settings.pageId.isNotBlank()) return "${settings.pageId}_$post"
 
-        // Some canonical links contain /permalink/<numeric id>.
         val permalink = Regex("/permalink/([0-9]+)").find(raw)?.groupValues?.getOrNull(1)
         if (!permalink.isNullOrBlank() && settings.pageId.isNotBlank()) return "${settings.pageId}_$permalink"
         return null
@@ -184,7 +269,6 @@ class MetaEngagementClient(private val settings: AppSettings) {
                     conn.disconnect()
                     current = next
                 } else {
-                    // Capture the effective URL. We intentionally do not scrape private/login HTML.
                     val effective = conn.url.toString()
                     conn.disconnect()
                     current = effective
@@ -196,23 +280,23 @@ class MetaEngagementClient(private val settings: AppSettings) {
     }
 
     private fun inspectObject(id: String, token: String): Pair<String, String> {
+        if (!isGraphPostId(id)) return "Invalid" to "Refused to inspect a non-Post Graph ID"
         return runCatching {
-            // metadata=1 is diagnostic only; unsupported/withheld metadata is reported
-            // rather than allowed to break reaction/comment scanning.
             val root = getJson("$id?metadata=1&fields=id,permalink_url,created_time", token)
-            val type = root.optJSONObject("metadata")?.optString("type").orEmpty().ifBlank { "Unknown" }
+            val type = root.optJSONObject("metadata")?.optString("type").orEmpty().ifBlank { "Post" }
             val permalink = root.optString("permalink_url")
             val created = root.optString("created_time")
             val details = buildString {
-                append("Graph object reachable")
+                append("Graph post reachable")
                 if (created.isNotBlank()) append(" • created $created")
                 if (permalink.isNotBlank()) append(" • permalink exposed")
             }
             type to details
-        }.getOrElse { "Unknown" to "Object inspection unavailable: ${cleanError(it.message)}" }
+        }.getOrElse { "Post" to "Post identified; optional inspection fields unavailable: ${cleanError(it.message)}" }
     }
 
     private fun readSummaryCount(id: String, edge: String, token: String): Int? {
+        if (!isGraphPostId(id)) return null
         return runCatching {
             val root = getJson("$id/$edge?limit=0&summary=true", token)
             root.optJSONObject("summary")?.let { summary ->
@@ -250,7 +334,7 @@ class MetaEngagementClient(private val settings: AppSettings) {
 
     private fun graphUrl(path: String): String {
         val p = if (path.startsWith("/")) path.substring(1) else path
-        return "https://graph.facebook.com/${settings.metaApiVersion.trim().ifBlank { "v23.0" }}/$p"
+        return "https://graph.facebook.com/${settings.metaApiVersion.trim().ifBlank { "v26.0" }}/$p"
     }
 
     private fun getJsonAbsolute(urlString: String): JSONObject {
@@ -269,5 +353,5 @@ class MetaEngagementClient(private val settings: AppSettings) {
     }
 
     private fun errorSuffix(value: String): String = if (value.isBlank() || value == "Unknown error") "" else " ($value)"
-    private fun cleanError(value: String?) = value.orEmpty().replace('\n', ' ').take(120).ifBlank { "Unknown error" }
+    private fun cleanError(value: String?) = value.orEmpty().replace('\n', ' ').take(160).ifBlank { "Unknown error" }
 }
