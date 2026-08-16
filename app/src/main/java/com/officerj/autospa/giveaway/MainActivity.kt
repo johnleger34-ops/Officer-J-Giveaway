@@ -674,12 +674,13 @@ class MainActivity : AppCompatActivity() {
         val provider = Ui.input(this, "Data provider").apply { setText(settingsStore.provider) }
         val apiVersion = Ui.input(this, "Meta API version").apply { setText(settingsStore.metaApiVersion) }
         val pageId = Ui.input(this, "Officer J Page ID").apply { setText(settingsStore.pageId) }
-        val token = Ui.input(this, "Meta access token").apply { setText(settingsStore.accessToken); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        val userToken = Ui.input(this, "User access token").apply { setText(settingsStore.userAccessToken); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        val pageToken = Ui.input(this, "Page access token").apply { setText(settingsStore.pageAccessToken); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
         val defaultUrl = Ui.input(this, "Default giveaway post URL").apply { setText(settingsStore.defaultPostUrl) }
         body.addView(Ui.card(this).apply {
             addView(Ui.text(this@MainActivity, "FACEBOOK / DATA PROVIDER", 18f, Ui.SILVER, true))
-            addView(Ui.text(this@MainActivity, "Page credentials are prefilled for this private app. Tap Edit here any time you need to replace them without rewriting the giveaway engine.", 12f, Ui.MUTED))
-            addView(provider, marginTop(9)); addView(apiVersion, marginTop(7)); addView(pageId, marginTop(7)); addView(token, marginTop(7)); addView(defaultUrl, marginTop(7))
+            addView(Ui.text(this@MainActivity, "User and Page credentials are stored separately. User-token calls never use the Page token, and Page calls never depend on the User token. Both remain editable here.", 12f, Ui.MUTED))
+            addView(provider, marginTop(9)); addView(apiVersion, marginTop(7)); addView(pageId, marginTop(7)); addView(userToken, marginTop(7)); addView(pageToken, marginTop(7)); addView(defaultUrl, marginTop(7))
         })
 
         val minVerified = Ui.input(this, "Minimum verified (1-3)").apply { inputType = InputType.TYPE_CLASS_NUMBER; setText(settingsStore.minimumVerified.toString()) }
@@ -704,7 +705,8 @@ class MainActivity : AppCompatActivity() {
                 settingsStore.provider = provider.text.toString().trim().ifBlank { "Meta Direct" }
                 settingsStore.metaApiVersion = apiVersion.text.toString().trim().ifBlank { "v23.0" }
                 settingsStore.pageId = pageId.text.toString().trim()
-                settingsStore.accessToken = token.text.toString().trim()
+                settingsStore.userAccessToken = userToken.text.toString().trim()
+                settingsStore.pageAccessToken = pageToken.text.toString().trim()
                 settingsStore.defaultPostUrl = defaultUrl.text.toString().trim()
                 settingsStore.minimumVerified = minVerified.text.toString().toIntOrNull() ?: 2
                 settingsStore.standardWeight = standardWeight.text.toString().toDoubleOrNull() ?: 1.0

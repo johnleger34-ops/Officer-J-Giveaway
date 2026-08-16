@@ -1,0 +1,24 @@
+Officer J Giveaway v1.1.8 token-separation patch
+
+Changes checked:
+- User and Page Meta access tokens are stored in separate settings fields.
+- Embedded defaults are present for both credentials supplied by the app owner.
+- Legacy v1.1.7 generic-token storage migrates without overwriting the embedded User token.
+- User-context probes (/me, /me/accounts, /me/permissions, personal-profile discovery) use only the User token.
+- Page-context probes (Page identity, published_posts, follower count, Page-owned engagement) use only a validated Page token.
+- /me/accounts may still discover/refresh a Page token from the User token; an explicit Page token is validated separately.
+- Diagnostic output labels USER and PAGE credentials independently.
+- Settings keeps both tokens editable.
+- Version bumped to 1.1.8 / versionCode 10.
+
+Regression checks:
+- Previous logs prove User token /me identifies the personal user and /me/accounts returns Officer J's Auto Spa.
+- Latest supplied Page-token log proves Page token /me identifies Officer J's Auto Spa and Page published_posts/follower-count endpoints are compatible.
+- New routing keeps these contexts separate so Page-token /me/posts cannot be mislabeled as personal-profile posts.
+- WheelView.kt SHA-256 unchanged: 413a4b25665cda9af78639ef1b492bbd405acda320098c25b70164dac633d379
+- RaffleView.kt SHA-256 unchanged: 0ad63f0f58abd2450fbe2ef50864e8643caca03399413f8ac9a99895b964680b
+- WinnerVideoExporter.kt SHA-256 unchanged: 13182896ade05babb574e171fef886447faeae12a47b7eb0a81a0b170b4ae333
+
+Limitations:
+- This environment does not have the Android Gradle toolchain installed, so the APK itself must compile in the existing GitHub Actions workflow.
+- Live Meta requests cannot be executed from this build environment; routing was regression-checked against the captured responses from prior diagnostic logs.

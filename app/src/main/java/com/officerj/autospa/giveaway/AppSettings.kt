@@ -13,9 +13,25 @@ class AppSettings(context: Context) {
         get() = prefs.getString("meta_api_version", "v26.0") ?: "v26.0"
         set(value) = prefs.edit().putString("meta_api_version", value).apply()
 
+    var userAccessToken: String
+        get() = prefs.getString("user_access_token", DEFAULT_USER_ACCESS_TOKEN).orEmpty().ifBlank { DEFAULT_USER_ACCESS_TOKEN }
+        set(value) = prefs.edit().putString("user_access_token", value).apply()
+
+    var pageAccessToken: String
+        get() {
+            val explicit = prefs.getString("page_access_token", null).orEmpty()
+            if (explicit.isNotBlank()) return explicit
+            // v1.1.7 had one generic token field. If the user replaced it with the Page token,
+            // preserve that value during upgrade; otherwise use the embedded Page-token default.
+            val legacy = prefs.getString("access_token", "").orEmpty()
+            return if (legacy.isNotBlank() && legacy != DEFAULT_USER_ACCESS_TOKEN) legacy else DEFAULT_PAGE_ACCESS_TOKEN
+        }
+        set(value) = prefs.edit().putString("page_access_token", value).apply()
+
+    @Deprecated("Use userAccessToken/pageAccessToken")
     var accessToken: String
-        get() = prefs.getString("access_token", DEFAULT_ACCESS_TOKEN).orEmpty().ifBlank { DEFAULT_ACCESS_TOKEN }
-        set(value) = prefs.edit().putString("access_token", value).apply()
+        get() = userAccessToken
+        set(value) { userAccessToken = value }
 
     var pageId: String
         get() {
@@ -57,6 +73,7 @@ class AppSettings(context: Context) {
         // User-requested embedded defaults. Settings can still override either value in-app.
         const val LEGACY_BAD_PAGE_ID = "88834713103428"
         const val DEFAULT_PAGE_ID = "888347131034286"
-        const val DEFAULT_ACCESS_TOKEN = "EAAZAGj6PnHQMBSLBbwuYJpjC5eLdkBk6ROG9ZCKua9OrOIDRh7Vxij3dlAxtv5rRkyLRFlkfkncGuyJbMeVuLZAlSBwkkXAFZAJWGXWMWFVhwhEKGUrZAOb5tFJh54TDYN6Ge70HzkH24QZBJsi3R3sPIRZBDkeMZAm5ZCXQJ4B0IkbjoyF7zwWrwxgCB3Cv4Qt8ELC8YGXklHCZAaMLnxZCbZBZA27cP8qqoq404Y9vZBHtHgYPJHbwY9Sb6sXgZDZD"
+        const val DEFAULT_USER_ACCESS_TOKEN = "EAAZAGj6PnHQMBSLBbwuYJpjC5eLdkBk6ROG9ZCKua9OrOIDRh7Vxij3dlAxtv5rRkyLRFlkfkncGuyJbMeVuLZAlSBwkkXAFZAJWGXWMWFVhwhEKGUrZAOb5tFJh54TDYN6Ge70HzkH24QZBJsi3R3sPIRZBDkeMZAm5ZCXQJ4B0IkbjoyF7zwWrwxgCB3Cv4Qt8ELC8YGXklHCZAaMLnxZCbZBZA27cP8qqoq404Y9vZBHtHgYPJHbwY9Sb6sXgZDZD"
+        const val DEFAULT_PAGE_ACCESS_TOKEN = "EAAZAGj6PnHQMBSAIDIWPHpREuSXAmZAnOAasKv7RfkXnqXfv9P765iZC3S4oZApAYtg3OewSiRjNBlZCyeijNrjuU9VfmNQNoFCUJaIS3XaqUoo33tdXZAB63i7UDyPcZBgfc74byOX1O3k2DUhS8ZCI30jxIllZBtTkn7XGZCPTlVlIJbZAWlpNAfMuySSZC3jjO6Q73OYSy1MhOMllk9tphZC45xR9dVUTzlgwyB1gtGTrdXeYZD"
     }
 }

@@ -50,33 +50,49 @@ class MetaEngagementClient(private val settings: AppSettings) {
 
     fun scan(postUrl: String): ScanResult {
         log.clear()
-        val configuredToken = settings.accessToken.trim()
+        val configuredUserToken = settings.userAccessToken.trim()
+        val configuredPageToken = settings.pageAccessToken.trim()
         val configuredPageId = settings.pageId.trim()
+        resolvedPageId = ""
+        pageToken = ""
+        userId = ""
+        grantedPermissions.clear()
         logLine("Officer J Meta compatibility sweep")
         logLine("Timestamp: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())}")
         logLine("Graph API: ${settings.metaApiVersion}")
         logLine("Configured Page ID: $configuredPageId")
-        logLine("Configured access token: $configuredToken")
+        logLine("Configured USER access token: $configuredUserToken")
+        logLine("Configured PAGE access token: $configuredPageToken")
         logLine("Post input: ${postUrl.trim()}")
         logLine("")
 
-        if (configuredToken.isBlank()) {
-            logStep("Stored token", false, "No access token configured")
-            return ScanResult("", postUrl.trim(), "Waiting for Meta access token", emptyMap(), emptyMap(),
+        if (configuredUserToken.isBlank() && configuredPageToken.isBlank()) {
+            logStep("Stored credentials", false, "No User or Page access token configured")
+            return ScanResult("", postUrl.trim(), "Waiting for Meta credentials", emptyMap(), emptyMap(),
                 "Access token missing", "Access token missing", "Unavailable", diagnosticLog = log.toString())
         }
 
-        // Run every capability probe independently. A failure in one never stops the rest.
-        probeTokenAndPage(configuredToken, configuredPageId)
-        probeUserPermissions(configuredToken)
-        val workingPageToken = pageToken.ifBlank { configuredToken }
+        // Run User-context and Page-context probes independently. Never substitute one token type for the other.
+        if (configuredUserToken.isNotBlank()) {
+            probeUserTokenAndDiscoverPage(configuredUserToken, configuredPageId)
+            probeUserPermissions(configuredUserToken)
+        } else {
+            logStep("User token", false, "No User access token configured")
+        }
+        if (configuredPageToken.isNotBlank()) {
+            probeExplicitPageToken(configuredPageToken, configuredPageId)
+        } else {
+            logStep("Page token", false, "No Page access token configured")
+        }
+        // Use whichever Page credential actually validated. The explicit token replaces the discovered one only when its /me probe identifies the configured Page.
+        val workingPageToken = pageToken.ifBlank { configuredPageToken }
         val workingPageId = resolvedPageId.ifBlank { configuredPageId }
 
         val reactions = linkedMapOf<String, String>()
         val comments = linkedMapOf<String, String>()
 
         // Try both Page-owned and personal-profile routes. The returned token follows the resolved post owner.
-        val resolved = resolvePost(postUrl, workingPageToken, workingPageId, configuredToken)
+        val resolved = resolvePost(postUrl, workingPageToken, workingPageId, configuredUserToken)
         var objectType = "Unresolved"
         var objectStatus = "No valid Graph post node was identified"
         var reactionSummary: Int? = null
@@ -132,24 +148,20 @@ class MetaEngagementClient(private val settings: AppSettings) {
         )
     }
 
-    private fun probeTokenAndPage(token: String, configuredPageId: String) {
-        val me = request(graphUrl("me?fields=id,name"), token)
+    private fun probeUserTokenAndDiscoverPage(userToken: String, configuredPageId: String) {
+        val me = request(graphUrl("me?fields=id,name"), userToken)
         val meJson = me.jsonOrNull()
         val meId = meJson?.optString("id").orEmpty()
         val meName = meJson?.optString("name").orEmpty()
-        logHttp("Token /me", me)
+        logHttp("USER token /me", me)
         if (me.ok && meId.isNotBlank()) {
             userId = meId
-            logStep("Token identity", true, "$meName ($meId)")
-            if (meName.equals("Officer J's Auto Spa", ignoreCase = true) || meId == configuredPageId) {
-                pageToken = token
-                resolvedPageId = meId
-                logStep("Current token as Page token", true, "Token identifies directly as the Page")
-            }
-        } else logStep("Token identity", false, errorMessage(me))
+            val isPageIdentity = meId == configuredPageId || meName.trim().equals("Officer J's Auto Spa", ignoreCase = true)
+            logStep("User token identity", !isPageIdentity, if (isPageIdentity) "This token identifies as the Page, not the personal user" else "$meName ($meId)")
+        } else logStep("User token identity", false, errorMessage(me))
 
-        val accounts = request(graphUrl("me/accounts?fields=id,name,access_token&limit=100"), token)
-        logHttp("/me/accounts", accounts)
+        val accounts = request(graphUrl("me/accounts?fields=id,name,access_token&limit=100"), userToken)
+        logHttp("USER token /me/accounts", accounts)
         if (accounts.ok) {
             val data = accounts.jsonOrNull()?.optJSONArray("data")
             var matched = false
@@ -159,28 +171,38 @@ class MetaEngagementClient(private val settings: AppSettings) {
                     val id = o.optString("id")
                     val name = o.optString("name")
                     val accountToken = o.optString("access_token")
-                    if (id == configuredPageId || name.equals("Officer J's Auto Spa", ignoreCase = true)) {
+                    if (id == configuredPageId || name.trim().equals("Officer J's Auto Spa", ignoreCase = true)) {
                         matched = true
                         resolvedPageId = id.ifBlank { configuredPageId }
-                        if (accountToken.isNotBlank()) pageToken = accountToken
-                        logStep("Officer J Page in /me/accounts", true, "$name ($id), Page token returned=${accountToken.isNotBlank()}")
+                        if (accountToken.isNotBlank() && pageToken.isBlank()) pageToken = accountToken
+                        logStep("Officer J Page via USER token", true, "$name ($id), discovered Page token=${accountToken.isNotBlank()}")
                         break
                     }
                 }
             }
-            if (!matched) logStep("Officer J Page in /me/accounts", false, "No matching Page in returned data")
-        } else logStep("Officer J Page in /me/accounts", false, errorMessage(accounts))
+            if (!matched) logStep("Officer J Page via USER token", false, "No matching Page in /me/accounts")
+        } else logStep("Officer J Page via USER token", false, errorMessage(accounts))
+    }
 
-        // Probe configured ID and discovered ID separately, so a typo in Settings is obvious in one log.
+    private fun probeExplicitPageToken(explicitPageToken: String, configuredPageId: String) {
+        val me = request(graphUrl("me?fields=id,name"), explicitPageToken)
+        val root = me.jsonOrNull()
+        val id = root?.optString("id").orEmpty()
+        val name = root?.optString("name").orEmpty()
+        logHttp("PAGE token /me", me)
+        if (me.ok && id.isNotBlank()) {
+            val matches = id == configuredPageId || name.trim().equals("Officer J's Auto Spa", ignoreCase = true)
+            if (matches) {
+                pageToken = explicitPageToken
+                resolvedPageId = id.ifBlank { configuredPageId }
+            }
+            logStep("Page token identity", matches, if (matches) "$name ($id)" else "Token identifies as $name ($id), not configured Page $configuredPageId")
+        } else logStep("Page token identity", false, errorMessage(me))
+
         if (configuredPageId.isNotBlank()) {
-            val configuredProbe = request(graphUrl("$configuredPageId?fields=id,name"), pageToken.ifBlank { token })
-            logHttp("Configured Page ID probe", configuredProbe)
-            logStep("Configured Page ID", configuredProbe.ok, if (configuredProbe.ok) configuredProbe.body else errorMessage(configuredProbe))
-        }
-        if (resolvedPageId.isNotBlank() && resolvedPageId != configuredPageId) {
-            val discoveredProbe = request(graphUrl("$resolvedPageId?fields=id,name"), pageToken.ifBlank { token })
-            logHttp("Discovered Page ID probe", discoveredProbe)
-            logStep("Discovered Page ID", discoveredProbe.ok, if (discoveredProbe.ok) discoveredProbe.body else errorMessage(discoveredProbe))
+            val configuredProbe = request(graphUrl("$configuredPageId?fields=id,name"), explicitPageToken)
+            logHttp("PAGE token configured Page probe", configuredProbe)
+            logStep("Configured Page ID with Page token", configuredProbe.ok, if (configuredProbe.ok) configuredProbe.body else errorMessage(configuredProbe))
         }
     }
 
@@ -214,12 +236,14 @@ class MetaEngagementClient(private val settings: AppSettings) {
         if (raw.isBlank()) return ResolvedPost("", "", "No post link entered")
         if (isGraphPostId(raw)) {
             logStep("Direct Graph Post ID", true, raw)
-            return ResolvedPost(raw, raw, "Graph post ID supplied", userToken, "Direct/unknown")
+            val directToken = if (pageId.isNotBlank() && raw.startsWith("${pageId}_")) token else userToken
+            return ResolvedPost(raw, raw, "Graph post ID supplied", directToken, if (directToken == token) "Officer J Page" else "Direct/unknown")
         }
 
         parseDirectPostId(raw, pageId)?.let {
             logStep("Direct Facebook URL parser", true, it)
-            return ResolvedPost(it, raw, "Direct Facebook post link recognized", userToken, "Direct URL")
+            val directToken = if (pageId.isNotBlank() && it.startsWith("${pageId}_")) token else userToken
+            return ResolvedPost(it, raw, "Direct Facebook post link recognized", directToken, if (directToken == token) "Officer J Page" else "Direct URL")
         }
 
         val isShareLink = runCatching {
@@ -234,7 +258,8 @@ class MetaEngagementClient(private val settings: AppSettings) {
             candidateUrl = redirect.first
             logStep("Share-link HTTP redirect", redirect.second.startsWith("Resolved"), "${redirect.second}; final=$candidateUrl")
             parseDirectPostId(candidateUrl, pageId)?.let {
-                return ResolvedPost(it, candidateUrl, "Share link redirected to a canonical Facebook post", userToken, "Redirect URL")
+                val directToken = if (pageId.isNotBlank() && it.startsWith("${pageId}_")) token else userToken
+                return ResolvedPost(it, candidateUrl, "Share link redirected to a canonical Facebook post", directToken, if (directToken == token) "Officer J Page" else "Redirect URL")
             }
         } else logStep("Share-link HTTP redirect", true, "Not required for this URL")
 
@@ -247,7 +272,8 @@ class MetaEngagementClient(private val settings: AppSettings) {
             val graphId = result.jsonOrNull()?.optString("id").orEmpty()
             if (isGraphPostId(graphId)) {
                 logStep("URL -> Graph Post ID", true, graphId)
-                return ResolvedPost(graphId, candidate, "Post resolved to a real Graph post ID", userToken, "URL Graph lookup")
+                val directToken = if (pageId.isNotBlank() && graphId.startsWith("${pageId}_")) token else userToken
+                return ResolvedPost(graphId, candidate, "Post resolved to a real Graph post ID", directToken, if (directToken == token) "Officer J Page" else "URL Graph lookup")
             }
             graphLookupError = if (graphId.isNotBlank()) "Meta returned non-post id: $graphId" else errorMessage(result)
             logStep("URL -> Graph Post ID", false, graphLookupError)
@@ -264,7 +290,8 @@ class MetaEngagementClient(private val settings: AppSettings) {
         } else logStep("Page post enumeration", false, "No usable Page ID")
 
         // Personal-profile route: use the original user token, never the Page token.
-        val userDiscovery = discoverUserPost(raw, candidateUrl, userToken)
+        val userDiscovery = if (userToken.isNotBlank()) discoverUserPost(raw, candidateUrl, userToken) else null
+        if (userToken.isBlank()) logStep("Personal profile enumeration", false, "No User token configured")
         if (userDiscovery != null) {
             logStep("Personal profile post match", true, "${userDiscovery.id} ${userDiscovery.permalink}")
             return ResolvedPost(
