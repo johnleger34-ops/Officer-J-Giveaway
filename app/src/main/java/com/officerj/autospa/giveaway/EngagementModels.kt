@@ -60,12 +60,18 @@ data class EngagementScan(
     var reactionStatus: String = "Not scanned",
     var commentStatus: String = "Not scanned",
     var followerStatus: String = "Not scanned",
+    var objectType: String = "Unknown",
+    var objectStatus: String = "Not inspected",
+    var reactionSummaryCount: Int? = null,
+    var commentSummaryCount: Int? = null,
     var lastScan: Long = 0L
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("postUrl", postUrl).put("postObjectId", postObjectId)
         .put("resolutionStatus", resolutionStatus).put("resolvedUrl", resolvedUrl)
         .put("reactionStatus", reactionStatus).put("commentStatus", commentStatus).put("followerStatus", followerStatus)
+        .put("objectType", objectType).put("objectStatus", objectStatus)
+        .put("reactionSummaryCount", reactionSummaryCount).put("commentSummaryCount", commentSummaryCount)
         .put("lastScan", lastScan)
         .put("participants", JSONArray().apply { participants.forEach { put(it.toJson()) } })
 
@@ -78,6 +84,10 @@ data class EngagementScan(
                 reactionStatus = o.optString("reactionStatus", "Not scanned"),
                 commentStatus = o.optString("commentStatus", "Not scanned"),
                 followerStatus = o.optString("followerStatus", "Not scanned"),
+                objectType = o.optString("objectType", "Unknown"),
+                objectStatus = o.optString("objectStatus", "Not inspected"),
+                reactionSummaryCount = if (o.has("reactionSummaryCount") && !o.isNull("reactionSummaryCount")) o.optInt("reactionSummaryCount") else null,
+                commentSummaryCount = if (o.has("commentSummaryCount") && !o.isNull("commentSummaryCount")) o.optInt("commentSummaryCount") else null,
                 lastScan = o.optLong("lastScan")
             )
             val a = o.optJSONArray("participants") ?: JSONArray()

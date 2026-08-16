@@ -17,7 +17,11 @@ class MetaEngagementClient(private val settings: AppSettings) {
         val comments: Map<String, String>,
         val reactionStatus: String,
         val commentStatus: String,
-        val followerStatus: String
+        val followerStatus: String,
+        val objectType: String = "Unknown",
+        val objectStatus: String = "Not inspected",
+        val reactionSummaryCount: Int? = null,
+        val commentSummaryCount: Int? = null
     )
 
     private data class ResolvedPost(val id: String, val url: String, val status: String)
@@ -38,6 +42,13 @@ class MetaEngagementClient(private val settings: AppSettings) {
         val reactions = linkedMapOf<String, String>()
         val comments = linkedMapOf<String, String>()
 
+        // Diagnostic pass: inspect the resolved Graph node and request edge summaries
+        // independently. This lets the UI distinguish a wrong/limited Graph object from
+        // a real zero-engagement result without making the scan fail.
+        val objectInspection = inspectObject(resolved.id, token)
+        val reactionSummary = readSummaryCount(resolved.id, "reactions", token)
+        val commentSummary = readSummaryCount(resolved.id, "comments", token)
+
         // Meta v26 can reject explicit identity fields on some post types (especially
         // personal-profile posts). Read the edge using its default fields first, then
         // preserve any participant identity Meta actually returns.
@@ -48,7 +59,10 @@ class MetaEngagementClient(private val settings: AppSettings) {
                 if (id.isNotBlank() && name.isNotBlank()) reactions[id] = name
             }
             when {
-                rawCount == 0 -> "Loaded 0"
+                rawCount == 0 && reactionSummary != null && reactionSummary > 0 ->
+                    "Edge returned 0 identities; Meta summary reports $reactionSummary reactions"
+                rawCount == 0 && reactionSummary != null -> "Loaded 0 (summary $reactionSummary)"
+                rawCount == 0 -> "Loaded 0 (no summary available)"
                 reactions.size == rawCount -> "Loaded $rawCount"
                 reactions.isNotEmpty() -> "Counted $rawCount; ${reactions.size} participant identities available"
                 else -> "Counted $rawCount; Facebook withheld participant identities"
@@ -63,7 +77,10 @@ class MetaEngagementClient(private val settings: AppSettings) {
                 if (id.isNotBlank() && name.isNotBlank()) comments[id] = name
             }
             when {
-                rawCount == 0 -> "Loaded 0"
+                rawCount == 0 && commentSummary != null && commentSummary > 0 ->
+                    "Edge returned 0 identities; Meta summary reports $commentSummary comments"
+                rawCount == 0 && commentSummary != null -> "Loaded 0 (summary $commentSummary)"
+                rawCount == 0 -> "Loaded 0 (no summary available)"
                 comments.size == rawCount -> "Loaded $rawCount"
                 comments.isNotEmpty() -> "Counted $rawCount; ${comments.size} commenter identities available"
                 else -> "Counted $rawCount; Facebook withheld commenter identities"
@@ -78,7 +95,11 @@ class MetaEngagementClient(private val settings: AppSettings) {
             comments,
             reactionStatus,
             commentStatus,
-            "Individual follower lookup is not exposed reliably; manual verification remains available"
+            "Individual follower lookup is not exposed reliably; manual verification remains available",
+            objectInspection.first,
+            objectInspection.second,
+            reactionSummary,
+            commentSummary
         )
     }
 
@@ -172,6 +193,32 @@ class MetaEngagementClient(private val settings: AppSettings) {
             }
             current to if (current != startUrl) "Resolved redirect chain" else "Redirect limit reached"
         }.getOrElse { startUrl to "Redirect lookup failed: ${cleanError(it.message)}" }
+    }
+
+    private fun inspectObject(id: String, token: String): Pair<String, String> {
+        return runCatching {
+            // metadata=1 is diagnostic only; unsupported/withheld metadata is reported
+            // rather than allowed to break reaction/comment scanning.
+            val root = getJson("$id?metadata=1&fields=id,permalink_url,created_time", token)
+            val type = root.optJSONObject("metadata")?.optString("type").orEmpty().ifBlank { "Unknown" }
+            val permalink = root.optString("permalink_url")
+            val created = root.optString("created_time")
+            val details = buildString {
+                append("Graph object reachable")
+                if (created.isNotBlank()) append(" • created $created")
+                if (permalink.isNotBlank()) append(" • permalink exposed")
+            }
+            type to details
+        }.getOrElse { "Unknown" to "Object inspection unavailable: ${cleanError(it.message)}" }
+    }
+
+    private fun readSummaryCount(id: String, edge: String, token: String): Int? {
+        return runCatching {
+            val root = getJson("$id/$edge?limit=0&summary=true", token)
+            root.optJSONObject("summary")?.let { summary ->
+                if (summary.has("total_count")) summary.optInt("total_count") else null
+            }
+        }.getOrNull()
     }
 
     private fun readPaged(path: String, token: String, fields: String?, consume: (JSONObject) -> Unit): Int {

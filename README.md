@@ -66,3 +66,17 @@ The included GitHub Actions workflow is the recommended build method because a n
 ## Data storage
 
 All giveaway data is stored locally inside the app. Uninstalling the app may delete local data, so use **EXPORT ALL** before uninstalling or moving to another device.
+
+## Signed release builds (v1.1.3+)
+
+Starting with v1.1.3, GitHub Actions builds a permanently signed **release APK** instead of `app-debug.apk`.
+
+One-time setup in Codespaces:
+
+```bash
+bash scripts/setup-release-signing.sh
+```
+
+The script creates the permanent signing key, stores the build credentials as GitHub Actions secrets, and creates a local `signing-backup/` folder. **Download and safely store both backup files before deleting the Codespace.** Never commit the signing backup. Every future release must use this same signing key so Android can install new versions over the existing app.
+
+The first signed release requires uninstalling the old debug-signed APK once. Future signed releases with a higher `versionCode` can update in place.

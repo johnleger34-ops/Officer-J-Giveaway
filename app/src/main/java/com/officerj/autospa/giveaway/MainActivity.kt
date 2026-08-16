@@ -469,11 +469,18 @@ class MainActivity : AppCompatActivity() {
         body.addView(Ui.card(this).apply {
             addView(Ui.text(this@MainActivity, "SCAN STATUS", 17f, Ui.SILVER, true))
             addView(Ui.text(this@MainActivity, "Post: ${scan.resolutionStatus}", 13f, statusColor(scan.resolutionStatus)))
+            if (scan.postObjectId.isNotBlank()) {
+                addView(Ui.text(this@MainActivity, "Resolved Graph ID: ${scan.postObjectId}", 12f, Ui.BLUE, true))
+            }
+            addView(Ui.text(this@MainActivity, "Object type: ${scan.objectType}", 12f, Ui.MUTED))
+            addView(Ui.text(this@MainActivity, "Object check: ${scan.objectStatus}", 12f, Ui.MUTED))
             if (scan.resolvedUrl.isNotBlank() && scan.resolvedUrl != scan.postUrl) {
                 addView(Ui.text(this@MainActivity, "Resolved URL: ${scan.resolvedUrl.take(110)}", 11f, Ui.MUTED))
             }
             addView(Ui.text(this@MainActivity, "Reactions: ${scan.reactionStatus}", 13f, statusColor(scan.reactionStatus)))
+            addView(Ui.text(this@MainActivity, "Reaction summary: ${scan.reactionSummaryCount?.toString() ?: "Unavailable"}", 12f, Ui.MUTED))
             addView(Ui.text(this@MainActivity, "Comments: ${scan.commentStatus}", 13f, statusColor(scan.commentStatus)))
+            addView(Ui.text(this@MainActivity, "Comment summary: ${scan.commentSummaryCount?.toString() ?: "Unavailable"}", 12f, Ui.MUTED))
             addView(Ui.text(this@MainActivity, "Page follow: ${scan.followerStatus}", 13f, Ui.MUTED))
         }, marginTop(12))
 
@@ -538,6 +545,10 @@ class MainActivity : AppCompatActivity() {
         scan.reactionStatus = result.reactionStatus
         scan.commentStatus = result.commentStatus
         scan.followerStatus = result.followerStatus
+        scan.objectType = result.objectType
+        scan.objectStatus = result.objectStatus
+        scan.reactionSummaryCount = result.reactionSummaryCount
+        scan.commentSummaryCount = result.commentSummaryCount
         val byId = scan.participants.associateBy { it.id }.toMutableMap()
         val ids = linkedSetOf<String>().apply { addAll(result.reactions.keys); addAll(result.comments.keys) }
         ids.forEach { id ->
