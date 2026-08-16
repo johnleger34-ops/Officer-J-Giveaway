@@ -18,7 +18,11 @@ class AppSettings(context: Context) {
         set(value) = prefs.edit().putString("access_token", value).apply()
 
     var pageId: String
-        get() = prefs.getString("page_id", DEFAULT_PAGE_ID).orEmpty().ifBlank { DEFAULT_PAGE_ID }
+        get() {
+            val stored = prefs.getString("page_id", DEFAULT_PAGE_ID).orEmpty().ifBlank { DEFAULT_PAGE_ID }
+            // Migrate the early test build's one-digit-short Page ID automatically.
+            return if (stored == LEGACY_BAD_PAGE_ID) DEFAULT_PAGE_ID else stored
+        }
         set(value) = prefs.edit().putString("page_id", value).apply()
 
     var defaultPostUrl: String
@@ -51,7 +55,8 @@ class AppSettings(context: Context) {
 
     companion object {
         // User-requested embedded defaults. Settings can still override either value in-app.
-        const val DEFAULT_PAGE_ID = "88834713103428"
+        const val LEGACY_BAD_PAGE_ID = "88834713103428"
+        const val DEFAULT_PAGE_ID = "888347131034286"
         const val DEFAULT_ACCESS_TOKEN = "EAAZAGj6PnHQMBSLBbwuYJpjC5eLdkBk6ROG9ZCKua9OrOIDRh7Vxij3dlAxtv5rRkyLRFlkfkncGuyJbMeVuLZAlSBwkkXAFZAJWGXWMWFVhwhEKGUrZAOb5tFJh54TDYN6Ge70HzkH24QZBJsi3R3sPIRZBDkeMZAm5ZCXQJ4B0IkbjoyF7zwWrwxgCB3Cv4Qt8ELC8YGXklHCZAaMLnxZCbZBZA27cP8qqoq404Y9vZBHtHgYPJHbwY9Sb6sXgZDZD"
     }
 }

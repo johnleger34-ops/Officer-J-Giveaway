@@ -1,0 +1,39 @@
+Officer J Giveaway v1.1.7 pre-package checks
+
+PASS - Replayed expectations from 2026-08-15 Meta diagnostic:
+  - User token identity endpoint succeeded.
+  - /me/accounts discovered Officer J's Auto Spa.
+  - Page access token was returned.
+  - Correct Page ID is 888347131034286.
+  - published_posts endpoint and pagination succeeded (165 posts / 2 pages in captured run).
+  - Page follower count endpoint succeeded.
+  - Remaining captured blocker was resolving a personal-profile giveaway post.
+
+PASS - New personal-profile compatibility sweep:
+  - /me/permissions probe added.
+  - user_posts grant is recorded explicitly.
+  - /me/posts is probed with pagination.
+  - /me/feed is probed as an additional compatibility route.
+  - Direct permalink/ID matching is attempted.
+  - Giveaway-looking personal posts are ranked when an opaque /share/ URL cannot be mapped.
+  - A post is auto-selected only with a high, uniquely separated confidence score.
+  - Engagement uses the original user token for personal-profile posts and the Page token for Page posts.
+  - Reactions/comments continue independently and multiple field combinations are tested/logged.
+
+PASS - Configuration:
+  - Default Page ID corrected to 888347131034286.
+  - Old one-digit-short Page ID is automatically migrated.
+  - Embedded access-token default remains editable in Settings.
+  - v1.1.7 / versionCode 9.
+
+PASS - Kotlin syntax/type smoke test for AppSettings.kt + MetaEngagementClient.kt using local Android/org.json stubs.
+  - Compiler completed successfully; only Java URL deprecation warnings.
+
+PASS - Locked components SHA-256 unchanged from v1.1.6 baseline:
+  WheelView.kt            413a4b25665cda9af78639ef1b492bbd405acda320098c25b70164dac633d379
+  RaffleView.kt           0ad63f0f58abd2450fbe2ef50864e8643caca03399413f8ac9a99895b964680b
+  WinnerVideoExporter.kt  13182896ade05babb574e171fef886447faeae12a47b7eb0a81a0b170b4ae333
+
+Not possible in this environment:
+  - Live calls to Meta using the user's token.
+  - Full Android Gradle APK compilation. GitHub Actions remains configured to perform assembleDebug.

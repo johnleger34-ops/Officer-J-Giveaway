@@ -30,6 +30,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Officer-J-Giveaway-v1.1.6-debug
+          name: Officer-J-Giveaway-v1.1.7-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error

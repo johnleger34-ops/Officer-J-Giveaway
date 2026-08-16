@@ -28,8 +28,15 @@ class MetaEngagementClient(private val settings: AppSettings) {
         val diagnosticLog: String = ""
     )
 
-    private data class ResolvedPost(val id: String, val url: String, val status: String)
+    private data class ResolvedPost(
+        val id: String,
+        val url: String,
+        val status: String,
+        val token: String = "",
+        val source: String = "Unknown"
+    )
     private data class PagePost(val id: String, val permalink: String, val createdTime: String)
+    private data class UserPost(val id: String, val permalink: String, val createdTime: String, val message: String)
     private data class HttpResult(val code: Int, val contentType: String, val body: String, val url: String) {
         fun jsonOrNull(): JSONObject? = runCatching { JSONObject(body.ifBlank { "{}" }) }.getOrNull()
         val ok: Boolean get() = code in 200..299
@@ -38,6 +45,8 @@ class MetaEngagementClient(private val settings: AppSettings) {
     private val log = StringBuilder()
     private var resolvedPageId: String = ""
     private var pageToken: String = ""
+    private var userId: String = ""
+    private val grantedPermissions = linkedSetOf<String>()
 
     fun scan(postUrl: String): ScanResult {
         log.clear()
@@ -57,15 +66,17 @@ class MetaEngagementClient(private val settings: AppSettings) {
                 "Access token missing", "Access token missing", "Unavailable", diagnosticLog = log.toString())
         }
 
-        // Run all authentication/page capability probes first. A failure in one does not stop the rest.
+        // Run every capability probe independently. A failure in one never stops the rest.
         probeTokenAndPage(configuredToken, configuredPageId)
-        val workingToken = pageToken.ifBlank { configuredToken }
+        probeUserPermissions(configuredToken)
+        val workingPageToken = pageToken.ifBlank { configuredToken }
         val workingPageId = resolvedPageId.ifBlank { configuredPageId }
 
         val reactions = linkedMapOf<String, String>()
         val comments = linkedMapOf<String, String>()
 
-        val resolved = resolvePost(postUrl, workingToken, workingPageId)
+        // Try both Page-owned and personal-profile routes. The returned token follows the resolved post owner.
+        val resolved = resolvePost(postUrl, workingPageToken, workingPageId, configuredToken)
         var objectType = "Unresolved"
         var objectStatus = "No valid Graph post node was identified"
         var reactionSummary: Int? = null
@@ -74,24 +85,29 @@ class MetaEngagementClient(private val settings: AppSettings) {
         var commentStatus = "Not scanned: no valid Graph post ID"
 
         if (resolved.id.isNotBlank()) {
-            val inspection = inspectObject(resolved.id, workingToken)
+            val engagementToken = resolved.token.ifBlank { workingPageToken }
+            val inspection = inspectObject(resolved.id, engagementToken)
             objectType = inspection.first
             objectStatus = inspection.second
 
-            reactionSummary = probeSummary(resolved.id, "reactions", workingToken)
-            commentSummary = probeSummary(resolved.id, "comments", workingToken)
+            reactionSummary = probeSummary(resolved.id, "reactions", engagementToken)
+            commentSummary = probeSummary(resolved.id, "comments", engagementToken)
 
-            reactionStatus = probePagedIdentities(resolved.id, "reactions", workingToken, reactions, true, reactionSummary)
-            commentStatus = probePagedIdentities(resolved.id, "comments", workingToken, comments, false, commentSummary)
+            reactionStatus = probePagedIdentities(resolved.id, "reactions", engagementToken, reactions, true, reactionSummary)
+            commentStatus = probePagedIdentities(resolved.id, "comments", engagementToken, comments, false, commentSummary)
+            probeEngagementFieldVariants(resolved.id, engagementToken)
         } else {
             logStep("Post engagement scan", false, "Skipped only because no real PAGEID_POSTID was identified. Other compatibility probes still completed.")
         }
 
-        val followerStatus = probeFollowerCapability(workingPageId, workingToken)
+        val followerStatus = probeFollowerCapability(workingPageId, workingPageToken)
         logLine("")
         logLine("=== FINAL CAPABILITY SUMMARY ===")
         logLine("Resolved Page ID: ${workingPageId.ifBlank { "Unavailable" }}")
         logLine("Page token available: ${pageToken.isNotBlank()}")
+        logLine("User ID: ${userId.ifBlank { "Unavailable" }}")
+        logLine("user_posts permission: ${if ("user_posts" in grantedPermissions) "granted" else "not granted"}")
+        logLine("Resolved post source: ${resolved.source}")
         logLine("Resolved Post ID: ${resolved.id.ifBlank { "Unavailable" }}")
         logLine("Reaction summary: ${reactionSummary ?: "Unavailable"}")
         logLine("Reaction identities: ${reactions.size}")
@@ -123,6 +139,7 @@ class MetaEngagementClient(private val settings: AppSettings) {
         val meName = meJson?.optString("name").orEmpty()
         logHttp("Token /me", me)
         if (me.ok && meId.isNotBlank()) {
+            userId = meId
             logStep("Token identity", true, "$meName ($meId)")
             if (meName.equals("Officer J's Auto Spa", ignoreCase = true) || meId == configuredPageId) {
                 pageToken = token
@@ -167,17 +184,42 @@ class MetaEngagementClient(private val settings: AppSettings) {
         }
     }
 
-    private fun resolvePost(postUrl: String, token: String, pageId: String): ResolvedPost {
+    private fun probeUserPermissions(token: String) {
+        grantedPermissions.clear()
+        val result = request(graphUrl("me/permissions"), token)
+        logHttp("User permissions", result)
+        if (!result.ok) {
+            logStep("User permission inventory", false, errorMessage(result))
+            return
+        }
+        val data = result.jsonOrNull()?.optJSONArray("data")
+        if (data != null) {
+            for (i in 0 until data.length()) {
+                val o = data.optJSONObject(i) ?: continue
+                if (o.optString("status").equals("granted", ignoreCase = true)) {
+                    o.optString("permission").takeIf { it.isNotBlank() }?.let { grantedPermissions += it }
+                }
+            }
+        }
+        logStep("User permission inventory", true, grantedPermissions.sorted().joinToString(", ").ifBlank { "No granted permissions returned" })
+        logStep(
+            "user_posts permission",
+            "user_posts" in grantedPermissions,
+            if ("user_posts" in grantedPermissions) "Granted; personal Timeline enumeration can be tested" else "Not granted. Personal-post endpoints will still be probed so the API response is captured."
+        )
+    }
+
+    private fun resolvePost(postUrl: String, token: String, pageId: String, userToken: String): ResolvedPost {
         val raw = postUrl.trim()
         if (raw.isBlank()) return ResolvedPost("", "", "No post link entered")
         if (isGraphPostId(raw)) {
             logStep("Direct Graph Post ID", true, raw)
-            return ResolvedPost(raw, raw, "Graph post ID supplied")
+            return ResolvedPost(raw, raw, "Graph post ID supplied", userToken, "Direct/unknown")
         }
 
         parseDirectPostId(raw, pageId)?.let {
             logStep("Direct Facebook URL parser", true, it)
-            return ResolvedPost(it, raw, "Direct Facebook post link recognized")
+            return ResolvedPost(it, raw, "Direct Facebook post link recognized", userToken, "Direct URL")
         }
 
         val isShareLink = runCatching {
@@ -192,7 +234,7 @@ class MetaEngagementClient(private val settings: AppSettings) {
             candidateUrl = redirect.first
             logStep("Share-link HTTP redirect", redirect.second.startsWith("Resolved"), "${redirect.second}; final=$candidateUrl")
             parseDirectPostId(candidateUrl, pageId)?.let {
-                return ResolvedPost(it, candidateUrl, "Share link redirected to a canonical Facebook post")
+                return ResolvedPost(it, candidateUrl, "Share link redirected to a canonical Facebook post", userToken, "Redirect URL")
             }
         } else logStep("Share-link HTTP redirect", true, "Not required for this URL")
 
@@ -205,7 +247,7 @@ class MetaEngagementClient(private val settings: AppSettings) {
             val graphId = result.jsonOrNull()?.optString("id").orEmpty()
             if (isGraphPostId(graphId)) {
                 logStep("URL -> Graph Post ID", true, graphId)
-                return ResolvedPost(graphId, candidate, "Post resolved to a real Graph post ID")
+                return ResolvedPost(graphId, candidate, "Post resolved to a real Graph post ID", userToken, "URL Graph lookup")
             }
             graphLookupError = if (graphId.isNotBlank()) "Meta returned non-post id: $graphId" else errorMessage(result)
             logStep("URL -> Graph Post ID", false, graphLookupError)
@@ -216,10 +258,24 @@ class MetaEngagementClient(private val settings: AppSettings) {
             val discovery = discoverPagePost(raw, candidateUrl, pageId, token)
             if (discovery != null) {
                 logStep("Page post match", true, "${discovery.id} ${discovery.permalink}")
-                return ResolvedPost(discovery.id, discovery.permalink.ifBlank { candidateUrl }, "Matched against posts owned by Officer J's Page")
+                return ResolvedPost(discovery.id, discovery.permalink.ifBlank { candidateUrl }, "Matched against posts owned by Officer J's Page", token, "Officer J Page")
             }
             logStep("Page post match", false, "No matching Page-owned post found. If the original giveaway was posted on a personal profile, the Pages API cannot turn it into a Page-owned post.")
         } else logStep("Page post enumeration", false, "No usable Page ID")
+
+        // Personal-profile route: use the original user token, never the Page token.
+        val userDiscovery = discoverUserPost(raw, candidateUrl, userToken)
+        if (userDiscovery != null) {
+            logStep("Personal profile post match", true, "${userDiscovery.id} ${userDiscovery.permalink}")
+            return ResolvedPost(
+                userDiscovery.id,
+                userDiscovery.permalink.ifBlank { candidateUrl },
+                "Matched against posts on the authenticated user's Timeline",
+                userToken,
+                "Personal profile"
+            )
+        }
+        logStep("Personal profile post match", false, "No usable personal-profile post could be matched. See /me/posts and /me/feed probes in this log.")
 
         val message = if (isShareLink) {
             "Could not map Facebook share link to a valid Page post ID. Full compatibility log is available below."
@@ -271,6 +327,132 @@ class MetaEngagementClient(private val settings: AppSettings) {
         }
         logStep("Page published_posts", true, "Endpoint compatible; scanned $total recent Page posts across ${pages.coerceAtMost(5)} page(s), no supplied-link match")
         return null
+    }
+
+    private fun discoverUserPost(rawUrl: String, candidateUrl: String, token: String): UserPost? {
+        if (token.isBlank()) {
+            logStep("Personal profile enumeration", false, "No user token")
+            return null
+        }
+        val targets = linkedSetOf(normalizeFacebookUrl(rawUrl), normalizeFacebookUrl(candidateUrl)).filter { it.isNotBlank() }.toSet()
+        val numericHints = extractNumericHints(rawUrl) + extractNumericHints(candidateUrl)
+        val candidates = mutableListOf<Pair<UserPost, Int>>()
+        var directMatch: UserPost? = null
+
+        fun enumerate(edge: String) {
+            if (directMatch != null) return
+            var next: String? = graphUrl("me/$edge?fields=id,permalink_url,created_time,message&limit=100")
+            var pages = 0
+            var total = 0
+            while (!next.isNullOrBlank() && pages++ < 5) {
+                val result = request(next, token)
+                logHttp("personal $edge page $pages", result)
+                if (!result.ok) {
+                    logStep("Personal $edge endpoint", false, errorMessage(result))
+                    return
+                }
+                val root = result.jsonOrNull()
+                if (root == null) {
+                    logStep("Personal $edge JSON", false, "Response was not valid JSON")
+                    return
+                }
+                val data = root.optJSONArray("data")
+                if (data != null) {
+                    total += data.length()
+                    for (i in 0 until data.length()) {
+                        val o = data.optJSONObject(i) ?: continue
+                        val id = o.optString("id")
+                        val permalink = o.optString("permalink_url")
+                        val created = o.optString("created_time")
+                        val message = o.optString("message")
+                        if (!isGraphPostId(id)) continue
+                        val post = UserPost(id, permalink, created, message)
+                        val normalizedPermalink = normalizeFacebookUrl(permalink)
+                        val idTail = id.substringAfterLast('_')
+                        if ((normalizedPermalink.isNotBlank() && normalizedPermalink in targets) ||
+                            (idTail.isNotBlank() && idTail in numericHints) ||
+                            numericHints.any { hint -> hint.isNotBlank() && normalizedPermalink.contains(hint) }) {
+                            directMatch = post
+                            logStep("Personal $edge endpoint", true, "Scanned $total posts; permalink/ID match found")
+                            return
+                        }
+                        val score = giveawayCandidateScore(message, created)
+                        if (score > 0) candidates += post to score
+                    }
+                }
+                next = root.optJSONObject("paging")?.optString("next")?.takeIf { it.isNotBlank() }
+            }
+            logStep("Personal $edge endpoint", true, "Endpoint compatible; scanned $total posts across ${pages.coerceAtMost(5)} page(s), no supplied-link match")
+        }
+
+        enumerate("posts")
+        if (directMatch == null) enumerate("feed")
+        directMatch?.let { return it }
+
+        // Share URLs contain no post number. When URL matching is impossible, rank giveaway-looking posts.
+        val ranked = candidates
+            .distinctBy { it.first.id }
+            .sortedWith(compareByDescending<Pair<UserPost, Int>> { it.second }.thenByDescending { it.first.createdTime })
+        if (ranked.isNotEmpty()) {
+            logLine("Personal-profile giveaway candidates:")
+            ranked.take(10).forEachIndexed { index, (post, score) ->
+                val snippet = post.message.replace(Regex("\\s+"), " ").take(180)
+                logLine("  ${index + 1}. score=$score id=${post.id} created=${post.createdTime} permalink=${post.permalink} message=$snippet")
+            }
+        } else {
+            logLine("Personal-profile giveaway candidates: none returned")
+        }
+
+        val best = ranked.firstOrNull()
+        val second = ranked.getOrNull(1)
+        // High threshold + separation avoids silently selecting an unrelated personal post.
+        if (best != null && best.second >= 8 && (second == null || best.second >= second.second + 3)) {
+            logStep("Personal giveaway heuristic", true, "Selected ${best.first.id} with score=${best.second}; next score=${second?.second ?: 0}")
+            return best.first
+        }
+        logStep(
+            "Personal giveaway heuristic",
+            false,
+            if (best == null) "No candidate post" else "Best score=${best.second}; not unique/confident enough to auto-select"
+        )
+        return null
+    }
+
+    private fun giveawayCandidateScore(message: String, createdTime: String): Int {
+        if (message.isBlank()) return 0
+        val text = message.lowercase(Locale.US)
+        var score = 0
+        fun has(term: String, points: Int) { if (text.contains(term)) score += points }
+        has("giveaway", 5)
+        has("winner", 3)
+        has("maintenance", 3)
+        has("one year", 3)
+        has("1 year", 3)
+        has("follow officer j", 3)
+        has("officer j's auto spa", 1)
+        has("like", 1)
+        has("comment", 1)
+        has("share", 1)
+        has("ceramic", 1)
+        // Current promotions are usually among the newest Timeline posts; this is only a tie-breaker signal.
+        if (createdTime.startsWith("2026-08")) score += 1
+        return score
+    }
+
+    private fun probeEngagementFieldVariants(id: String, token: String) {
+        val tests = listOf(
+            "reactions default" to "$id/reactions?limit=5",
+            "reactions id-type" to "$id/reactions?fields=id,type&limit=5",
+            "reactions id-name-type" to "$id/reactions?fields=id,name,type&limit=5",
+            "comments default" to "$id/comments?limit=5",
+            "comments id-message-time" to "$id/comments?fields=id,message,created_time&limit=5",
+            "comments with-from" to "$id/comments?fields=id,message,from,created_time&limit=5"
+        )
+        for ((label, path) in tests) {
+            val result = request(graphUrl(path), token)
+            logHttp("Field compatibility: $label", result)
+            logStep("Field compatibility: $label", result.ok, if (result.ok) "Supported" else errorMessage(result))
+        }
     }
 
     private fun inspectObject(id: String, token: String): Pair<String, String> {
@@ -382,6 +564,8 @@ class MetaEngagementClient(private val settings: AppSettings) {
         val story = Regex("[?&]story_fbid=([0-9]+)").find(raw)?.groupValues?.getOrNull(1)
         val owner = Regex("[?&]id=([0-9]+)").find(raw)?.groupValues?.getOrNull(1)
         if (!story.isNullOrBlank() && !owner.isNullOrBlank()) return "${owner}_${story}"
+        val ownerPost = Regex("/(\\d+)/(?:posts|videos)/(\\d+)").find(raw)
+        if (ownerPost != null) return "${ownerPost.groupValues[1]}_${ownerPost.groupValues[2]}"
         val post = Regex("/(?:posts|videos)/([0-9]+)").find(raw)?.groupValues?.getOrNull(1)
         if (!post.isNullOrBlank() && pageId.isNotBlank()) return "${pageId}_$post"
         val permalink = Regex("/permalink/([0-9]+)").find(raw)?.groupValues?.getOrNull(1)
@@ -448,7 +632,7 @@ class MetaEngagementClient(private val settings: AppSettings) {
             conn.readTimeout = 18000
             conn.requestMethod = "GET"
             conn.setRequestProperty("Accept", "application/json")
-            conn.setRequestProperty("User-Agent", "OfficerJGiveaway/1.1.6 Android")
+            conn.setRequestProperty("User-Agent", "OfficerJGiveaway/1.1.7 Android")
             val code = conn.responseCode
             val contentType = conn.contentType.orEmpty()
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream

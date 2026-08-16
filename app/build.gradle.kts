@@ -11,8 +11,8 @@ android {
         applicationId = "com.officerj.autospa.giveaway"
         minSdk = 29
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.1.6"
+        versionCode = 9
+        versionName = "1.1.7"
     }
 
     buildFeatures {
