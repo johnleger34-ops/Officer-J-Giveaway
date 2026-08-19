@@ -1,0 +1,11 @@
+Officer J Giveaway v1.1.9
+
+Changes requested:
+- Wheel spinner behavior unchanged.
+- Raffle/picker behavior unchanged.
+- Removed Facebook/Meta entry-check UI, scanner code, engagement storage code, and embedded Facebook credentials/settings.
+- IMPORT FILE now opens Android's general file picker instead of restricting selection to TXT/CSV/JSON.
+- Import path now actually uses DocumentEntryImporter for document/spreadsheet formats.
+- Supported directly: TXT, CSV, JSON, PDF (selectable text), XLSX, DOCX, ODS, RTF, HTML/HTM, XML, and other text-based files.
+- Legacy binary .XLS and .DOC can be selected, but the app gives a clear conversion message because those obsolete binary formats are not decoded by this build.
+- Existing export, backup/restore, update checker, wheel animation, raffle animation, weighted-entry behavior, and winner video behavior retained.

@@ -28,13 +28,10 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
     private lateinit var store: GiveawayStore
     private lateinit var settingsStore: AppSettings
-    private lateinit var engagementStore: EngagementStore
     private val giveaways = mutableListOf<Giveaway>()
-    private val engagementScans = mutableMapOf<String, EngagementScan>()
     private var currentId: String? = null
     private var pendingImportId: String? = null
     private var pendingExportId: String? = null
-    private var pendingDiagnosticLog: String = ""
 
     private val openText = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) importFromUri(uri)
@@ -48,22 +45,11 @@ class MainActivity : AppCompatActivity() {
     private val openBackup = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) restoreBackup(uri)
     }
-    private val createDiagnosticLog = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        if (uri != null && pendingDiagnosticLog.isNotBlank()) {
-            runCatching {
-                contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(pendingDiagnosticLog) }
-            }.onSuccess { toast("Diagnostic log saved") }
-             .onFailure { toast("Could not save log: ${it.message}") }
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = GiveawayStore(this)
         settingsStore = AppSettings(this)
-        engagementStore = EngagementStore(this)
         giveaways += store.load()
-        engagementScans += engagementStore.load()
         showDashboard()
     }
 
@@ -131,12 +117,6 @@ class MainActivity : AppCompatActivity() {
         tools.addView(restore, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(5) })
         body.addView(tools, marginTop(14))
 
-        val facebookTools = Ui.card(this).apply {
-            addView(Ui.text(this@MainActivity, "FACEBOOK ENTRY CHECK", 18f, Ui.SILVER, true))
-            addView(Ui.text(this@MainActivity, "Check reactions and comments independently. Missing Facebook data is marked unavailable and never cancels successful results.", 13f, Ui.MUTED))
-            addView(Ui.button(this@MainActivity, "OPEN ENTRY CHECK").apply { setOnClickListener { showEngagementHome() } }, marginTop(10))
-        }
-        body.addView(facebookTools, marginTop(14))
 
         body.addView(Ui.button(this, "SETTINGS", true).apply { setOnClickListener { showSettings() } }, marginTop(10))
 
@@ -248,7 +228,7 @@ class MainActivity : AppCompatActivity() {
 
         val ioRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         ioRow.addView(Ui.button(this, "PASTE LIST", true).apply { setOnClickListener { pasteListDialog(g) } }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(4) })
-        ioRow.addView(Ui.button(this, "IMPORT FILE", true).apply { setOnClickListener { pendingImportId = g.id; openText.launch(arrayOf("text/plain", "text/csv", "application/json")) } }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+        ioRow.addView(Ui.button(this, "IMPORT FILE", true).apply { setOnClickListener { pendingImportId = g.id; openText.launch(arrayOf("*/*")) } }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
         ioRow.addView(Ui.button(this, "EXPORT", true).apply { setOnClickListener { pendingExportId = g.id; createExport.launch(safeFileName(g.title) + ".csv") } }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(4) })
         body.addView(ioRow, marginTop(10))
 
@@ -377,7 +357,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun importFromUri(uri: Uri) {
         val g = giveaways.firstOrNull { it.id == pendingImportId } ?: return
-        val text = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: return toast("Could not read file")
+        val text = runCatching { DocumentEntryImporter(this).read(uri) }
+            .getOrElse { return toast("Could not import file: ${it.message ?: "unsupported or unreadable format"}") }
         val parsed = if (text.trim().startsWith("[")) {
             runCatching {
                 val a = JSONArray(text); (0 until a.length()).map { i ->
@@ -385,7 +366,10 @@ class MainActivity : AppCompatActivity() {
                 }
             }.getOrElse { parseEntries(text) }
         } else parseEntries(text)
-        g.entries += parsed.filter { it.name.isNotBlank() }; persist(); showEditor(g.id); toast("Imported ${parsed.sumOf { it.quantity }} entries")
+        val clean = parsed.filter { it.name.isNotBlank() && !it.name.equals("name", true) && !it.name.equals("entries", true) && !it.name.equals("quantity", true) }
+        if (clean.isEmpty()) return toast("No giveaway names were found in that file")
+        g.entries += clean
+        persist(); showEditor(g.id); toast("Imported ${clean.sumOf { it.quantity }} entries")
     }
 
     private fun exportToUri(uri: Uri) {
@@ -427,270 +411,15 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Cancel", null).setPositiveButton("Delete") { _, _ -> giveaways.remove(g); persist(); showDashboard() }.show()
     }
 
-    private fun showEngagementHome() {
-        currentId = null
-        val root = baseScreen("Facebook Entry Check") { showDashboard() }
-        val scroll = ScrollView(this)
-        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(35)) }
-
-        body.addView(Ui.card(this).apply {
-            addView(Ui.text(this@MainActivity, "SELECT GIVEAWAY", 18f, Ui.SILVER, true))
-            addView(Ui.text(this@MainActivity, "The Facebook scan is stored separately from wheel/raffle animation code.", 13f, Ui.MUTED))
-        })
-
-        if (giveaways.isEmpty()) {
-            body.addView(Ui.text(this, "Create a wheel or raffle first.", 14f, Ui.MUTED), marginTop(12))
-        } else giveaways.sortedByDescending { it.createdAt }.forEach { g ->
-            val scan = engagementScans[g.id]
-            body.addView(Ui.card(this).apply {
-                val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                val labels = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
-                labels.addView(Ui.text(this@MainActivity, g.title, 16f, Ui.SILVER, true))
-                labels.addView(Ui.text(this@MainActivity, if (scan == null || scan.lastScan == 0L) "Not scanned" else "${scan.participants.size} people • ${dateFmt(scan.lastScan)}", 12f, Ui.MUTED))
-                row.addView(labels, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-                row.addView(Ui.button(this@MainActivity, "OPEN").apply { setOnClickListener { showEngagement(g.id) } }, LinearLayout.LayoutParams(dp(90), dp(44)))
-                addView(row)
-            }, marginTop(10))
-        }
-
-        scroll.addView(body); root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)); setContentView(root)
-    }
-
-    private fun showEngagement(giveawayId: String) {
-        val g = giveaways.firstOrNull { it.id == giveawayId } ?: return showEngagementHome()
-        val scan = engagementScans.getOrPut(g.id) { EngagementScan(postUrl = settingsStore.defaultPostUrl) }
-        val root = baseScreen("Entry Verification") { showEngagementHome() }
-        val scroll = ScrollView(this)
-        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(35)) }
-
-        val postInput = Ui.input(this, "Facebook post URL or Graph post ID").apply { setText(scan.postUrl.ifBlank { settingsStore.defaultPostUrl }) }
-        body.addView(Ui.card(this).apply {
-            addView(Ui.text(this@MainActivity, g.title, 20f, Ui.SILVER, true))
-            addView(Ui.text(this@MainActivity, "Paste the original giveaway post. Reactions and comments are scanned separately so one failed category cannot wipe out the other.", 13f, Ui.MUTED))
-            addView(postInput, marginTop(10))
-            addView(Ui.button(this@MainActivity, "SCAN FACEBOOK").apply {
-                setOnClickListener {
-                    val url = postInput.text.toString().trim()
-                    if (url.isBlank()) toast("Paste the giveaway post link first") else {
-                        scan.postUrl = url; saveEngagement(); showScanLoading(g, scan)
-                    }
-                }
-            }, marginTop(10))
-        })
-
-        body.addView(Ui.card(this).apply {
-            addView(Ui.text(this@MainActivity, "SCAN STATUS", 17f, Ui.SILVER, true))
-            addView(Ui.text(this@MainActivity, "Post: ${scan.resolutionStatus}", 13f, statusColor(scan.resolutionStatus)))
-            if (scan.postObjectId.isNotBlank()) {
-                addView(Ui.text(this@MainActivity, "Resolved Graph ID: ${scan.postObjectId}", 12f, Ui.BLUE, true))
-            }
-            addView(Ui.text(this@MainActivity, "Object type: ${scan.objectType}", 12f, Ui.MUTED))
-            addView(Ui.text(this@MainActivity, "Object check: ${scan.objectStatus}", 12f, Ui.MUTED))
-            if (scan.resolvedUrl.isNotBlank() && scan.resolvedUrl != scan.postUrl) {
-                addView(Ui.text(this@MainActivity, "Resolved URL: ${scan.resolvedUrl.take(110)}", 11f, Ui.MUTED))
-            }
-            addView(Ui.text(this@MainActivity, "Reactions: ${scan.reactionStatus}", 13f, statusColor(scan.reactionStatus)))
-            addView(Ui.text(this@MainActivity, "Reaction summary: ${scan.reactionSummaryCount?.toString() ?: "Unavailable"}", 12f, Ui.MUTED))
-            addView(Ui.text(this@MainActivity, "Comments: ${scan.commentStatus}", 13f, statusColor(scan.commentStatus)))
-            addView(Ui.text(this@MainActivity, "Comment summary: ${scan.commentSummaryCount?.toString() ?: "Unavailable"}", 12f, Ui.MUTED))
-            addView(Ui.text(this@MainActivity, "Page follow: ${scan.followerStatus}", 13f, Ui.MUTED))
-        }, marginTop(12))
-
-        if (scan.diagnosticLog.isNotBlank()) {
-            body.addView(Ui.card(this).apply {
-                addView(Ui.text(this@MainActivity, "FULL META COMPATIBILITY LOG", 17f, Ui.SILVER, true))
-                addView(Ui.text(this@MainActivity, "The scan continues through compatible checks even when another check fails.", 12f, Ui.MUTED))
-                addView(Ui.text(this@MainActivity, scan.diagnosticLog.take(7000), 10f, Ui.MUTED), marginTop(8))
-                val buttons = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
-                buttons.addView(Ui.button(this@MainActivity, "COPY LOG", true).apply {
-                    setOnClickListener {
-                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Officer J Meta diagnostic", scan.diagnosticLog))
-                        toast("Diagnostic log copied")
-                    }
-                }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) })
-                buttons.addView(Ui.button(this@MainActivity, "DOWNLOAD LOG").apply {
-                    setOnClickListener {
-                        pendingDiagnosticLog = scan.diagnosticLog
-                        val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
-                        createDiagnosticLog.launch("OfficerJ-Meta-Diagnostic-$stamp.txt")
-                    }
-                }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
-                addView(buttons, marginTop(9))
-            }, marginTop(12))
-        }
-
-        val eligible = scan.participants.count { it.eligibility(settingsStore) != Eligibility.NOT_ELIGIBLE }
-        val bonus = scan.participants.count { it.eligibility(settingsStore) == Eligibility.BONUS }
-        body.addView(Ui.card(this).apply {
-            addView(Ui.text(this@MainActivity, "${scan.participants.size} PEOPLE FOUND", 17f, Ui.SILVER, true))
-            addView(Ui.text(this@MainActivity, "$eligible eligible • $bonus at ${"%.2f".format(settingsStore.bonusWeight)} weight", 13f, Ui.BLUE, true))
-            addView(Ui.text(this@MainActivity, "Minimum: ${settingsStore.minimumVerified} verified interactions. One verified interaction receives no entry.", 12f, Ui.MUTED))
-            addView(Ui.button(this@MainActivity, "ADD ELIGIBLE TO ${if (g.type == GiveawayType.WHEEL) "WHEEL" else "RAFFLE"}").apply {
-                isEnabled = eligible > 0
-                setOnClickListener { addEligibleToGiveaway(g, scan) }
-            }, marginTop(10))
-        }, marginTop(12))
-
-        body.addView(Ui.text(this, "PEOPLE", 18f, Ui.SILVER, true), marginTop(18))
-        val manualName = Ui.input(this, "Add a person manually when Facebook withholds identity")
-        body.addView(Ui.card(this).apply {
-            addView(Ui.text(this@MainActivity, "MANUAL VERIFICATION FALLBACK", 14f, Ui.SILVER, true))
-            addView(Ui.text(this@MainActivity, "Facebook can return engagement counts without exposing who performed them. Add a person here and mark only the interactions you can verify.", 12f, Ui.MUTED))
-            addView(manualName, marginTop(8))
-            addView(Ui.button(this@MainActivity, "ADD PERSON").apply {
-                setOnClickListener {
-                    val name = manualName.text.toString().trim()
-                    if (name.isBlank()) return@setOnClickListener toast("Enter a name")
-                    val existing = scan.participants.firstOrNull { it.name.equals(name, ignoreCase = true) }
-                    if (existing == null) {
-                        scan.participants += EngagementParticipant(id = "manual_${System.currentTimeMillis()}", name = name, source = "Manual verification")
-                        scan.lastScan = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id)
-                    } else toast("That person is already in this verification list")
-                }
-            }, marginTop(8))
-        }, marginTop(8))
-        if (scan.participants.isEmpty()) body.addView(Ui.text(this, "No identifiable engagement data yet. Facebook may still have returned counts above.", 14f, Ui.MUTED), marginTop(8))
-        else scan.participants.sortedWith(compareByDescending<EngagementParticipant> { it.verifiedCount }.thenBy { it.name.lowercase() }).forEach { p ->
-            body.addView(participantCard(g, scan, p), marginTop(8))
-        }
-
-        scroll.addView(body); root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)); setContentView(root)
-    }
-
-    private fun showScanLoading(g: Giveaway, scan: EngagementScan) {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24)); gravity = Gravity.CENTER }
-        val progress = ProgressBar(this)
-        box.addView(progress, LinearLayout.LayoutParams(dp(60), dp(60)).apply { gravity = Gravity.CENTER_HORIZONTAL })
-        box.addView(Ui.text(this, "Connecting to Facebook…\nLoading reactions…\nLoading comments…", 15f, Ui.SILVER, true).apply { gravity = Gravity.CENTER }, marginTop(12))
-        setContentView(box)
-        thread {
-            val result = runCatching { MetaEngagementClient(settingsStore).scan(scan.postUrl) }.getOrElse {
-                MetaEngagementClient.ScanResult("", scan.postUrl, "Scanner error: ${it.message ?: "error"}", emptyMap(), emptyMap(), "Unavailable: ${it.message ?: "error"}", "Unavailable: ${it.message ?: "error"}", "Unavailable")
-            }
-            mergeScanResult(scan, result)
-            saveEngagement()
-            runOnUiThread { showEngagement(g.id) }
-        }
-    }
-
-    private fun mergeScanResult(scan: EngagementScan, result: MetaEngagementClient.ScanResult) {
-        scan.postObjectId = result.postId
-        scan.resolvedUrl = result.resolvedUrl
-        scan.resolutionStatus = result.resolutionStatus
-        scan.reactionStatus = result.reactionStatus
-        scan.commentStatus = result.commentStatus
-        scan.followerStatus = result.followerStatus
-        scan.objectType = result.objectType
-        scan.objectStatus = result.objectStatus
-        scan.reactionSummaryCount = result.reactionSummaryCount
-        scan.commentSummaryCount = result.commentSummaryCount
-        scan.diagnosticLog = result.diagnosticLog
-        val byId = scan.participants.associateBy { it.id }.toMutableMap()
-        val ids = linkedSetOf<String>().apply { addAll(result.reactions.keys); addAll(result.comments.keys) }
-        ids.forEach { id ->
-            val existing = byId[id] ?: EngagementParticipant(id = id, name = result.reactions[id] ?: result.comments[id] ?: id)
-            existing.name = result.reactions[id] ?: result.comments[id] ?: existing.name
-            existing.reacted = when {
-                result.reactions.containsKey(id) -> VerificationState.VERIFIED
-                result.reactionStatus.startsWith("Loaded") -> VerificationState.NOT_FOUND
-                else -> existing.reacted.takeIf { it == VerificationState.VERIFIED } ?: VerificationState.UNKNOWN
-            }
-            existing.commented = when {
-                result.comments.containsKey(id) -> VerificationState.VERIFIED
-                result.commentStatus.startsWith("Loaded") -> VerificationState.NOT_FOUND
-                else -> existing.commented.takeIf { it == VerificationState.VERIFIED } ?: VerificationState.UNKNOWN
-            }
-            existing.updatedAt = System.currentTimeMillis(); byId[id] = existing
-        }
-        // Keep manually-reviewed people even if a later API call cannot return them.
-        scan.participants.clear(); scan.participants += byId.values
-        scan.lastScan = System.currentTimeMillis()
-    }
-
-    private fun participantCard(g: Giveaway, scan: EngagementScan, p: EngagementParticipant): View {
-        val card = Ui.card(this, 10)
-        val title = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        title.addView(Ui.text(this, p.name, 15f, Ui.SILVER, true), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        val eligibility = p.eligibility(settingsStore)
-        val label = when (eligibility) {
-            Eligibility.BONUS -> "3/3 • ${"%.2f".format(p.weight(settingsStore))}"
-            Eligibility.STANDARD -> "${p.verifiedCount}/3 • ${"%.2f".format(p.weight(settingsStore))}"
-            Eligibility.STANDARD_REVIEW -> "${p.verifiedCount}/3 • REVIEW"
-            Eligibility.NOT_ELIGIBLE -> "${p.verifiedCount}/3 • NO ENTRY"
-        }
-        title.addView(Ui.text(this, label, 12f, if (eligibility == Eligibility.NOT_ELIGIBLE) Ui.RED else Ui.BLUE, true))
-        card.addView(title)
-        card.addView(Ui.text(this, "Reaction ${stateIcon(p.reacted)}   Comment ${stateIcon(p.commented)}   Follow ${stateIcon(p.followsPage)}", 13f, Ui.MUTED), marginTop(5))
-
-        card.addView(verificationRow("REACTION", p.reacted) { value ->
-            p.reacted = value; p.updatedAt = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id)
-        }, marginTop(8))
-        card.addView(verificationRow("COMMENT", p.commented) { value ->
-            p.commented = value; p.updatedAt = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id)
-        }, marginTop(5))
-        card.addView(verificationRow("FOLLOW", p.followsPage) { value ->
-            p.followsPage = value; p.updatedAt = System.currentTimeMillis(); saveEngagement(); showEngagement(g.id)
-        }, marginTop(5))
-        return card
-    }
-
-    private fun verificationRow(label: String, current: VerificationState, setValue: (VerificationState) -> Unit): View {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        row.addView(Ui.text(this, label, 11f, Ui.MUTED, true), LinearLayout.LayoutParams(dp(78), LinearLayout.LayoutParams.WRAP_CONTENT))
-        fun stateButton(text: String, state: VerificationState): View = Ui.button(this, text, current == state).apply {
-            setOnClickListener { setValue(state) }
-        }
-        row.addView(stateButton("✓", VerificationState.VERIFIED), LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(3) })
-        row.addView(stateButton("?", VerificationState.UNKNOWN), LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
-        row.addView(stateButton("✕", VerificationState.NOT_FOUND), LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(3) })
-        return row
-    }
-
-    private fun addEligibleToGiveaway(g: Giveaway, scan: EngagementScan) {
-        val candidates = scan.participants.filter { it.eligibility(settingsStore) != Eligibility.NOT_ELIGIBLE }
-        if (candidates.isEmpty()) return toast("No eligible people")
-        var added = 0
-        candidates.forEach { p ->
-            val weight = p.weight(settingsStore)
-            val whole = kotlin.math.floor(weight).toInt().coerceAtLeast(1)
-            val fractional = (weight - whole).coerceAtLeast(0.0)
-            val existing = g.entries.firstOrNull { it.name.equals(p.name, ignoreCase = true) }
-            if (existing == null) {
-                g.entries += EntryGroup(name = p.name, quantity = whole, bonusWeight = fractional)
-                added++
-            } else if (fractional > existing.bonusWeight) {
-                existing.bonusWeight = fractional
-            }
-        }
-        persist(); toast("Added $added new eligible people. Verified fractional bonuses were applied behind the scenes."); showEngagement(g.id)
-    }
-
     private fun showSettings() {
         val root = baseScreen("Settings") { showDashboard() }
         val scroll = ScrollView(this)
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(35)) }
 
-        val provider = Ui.input(this, "Data provider").apply { setText(settingsStore.provider) }
-        val apiVersion = Ui.input(this, "Meta API version").apply { setText(settingsStore.metaApiVersion) }
-        val pageId = Ui.input(this, "Officer J Page ID").apply { setText(settingsStore.pageId) }
-        val userToken = Ui.input(this, "User access token").apply { setText(settingsStore.userAccessToken); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
-        val pageToken = Ui.input(this, "Page access token").apply { setText(settingsStore.pageAccessToken); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
-        val defaultUrl = Ui.input(this, "Default giveaway post URL").apply { setText(settingsStore.defaultPostUrl) }
         body.addView(Ui.card(this).apply {
-            addView(Ui.text(this@MainActivity, "FACEBOOK / DATA PROVIDER", 18f, Ui.SILVER, true))
-            addView(Ui.text(this@MainActivity, "User and Page credentials are stored separately. User-token calls never use the Page token, and Page calls never depend on the User token. Both remain editable here.", 12f, Ui.MUTED))
-            addView(provider, marginTop(9)); addView(apiVersion, marginTop(7)); addView(pageId, marginTop(7)); addView(userToken, marginTop(7)); addView(pageToken, marginTop(7)); addView(defaultUrl, marginTop(7))
+            addView(Ui.text(this@MainActivity, "FILE IMPORT", 18f, Ui.SILVER, true))
+            addView(Ui.text(this@MainActivity, "Import lists from TXT, CSV, JSON, PDF, XLSX, DOCX, ODS, RTF, HTML, XML and other text-based files. Android's picker now allows all file types so supported documents are selectable.", 12f, Ui.MUTED))
         })
-
-        val minVerified = Ui.input(this, "Minimum verified (1-3)").apply { inputType = InputType.TYPE_CLASS_NUMBER; setText(settingsStore.minimumVerified.toString()) }
-        val standardWeight = Ui.input(this, "Standard weight").apply { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(settingsStore.standardWeight.toString()) }
-        val bonusWeight = Ui.input(this, "3/3 bonus weight").apply { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(settingsStore.bonusWeight.toString()) }
-        body.addView(Ui.card(this).apply {
-            addView(Ui.text(this@MainActivity, "ELIGIBILITY", 18f, Ui.SILVER, true))
-            addView(Ui.text(this@MainActivity, "Current rule: 0–1 verified = no entry, 2/3 = 1.00, 3/3 = 1.15.", 12f, Ui.MUTED))
-            addView(minVerified, marginTop(9)); addView(standardWeight, marginTop(7)); addView(bonusWeight, marginTop(7))
-        }, marginTop(12))
 
         val updateUrl = Ui.input(this, "Update manifest HTTPS URL").apply { setText(settingsStore.updateManifestUrl) }
         body.addView(Ui.card(this).apply {
@@ -702,15 +431,6 @@ class MainActivity : AppCompatActivity() {
 
         body.addView(Ui.button(this, "SAVE SETTINGS").apply {
             setOnClickListener {
-                settingsStore.provider = provider.text.toString().trim().ifBlank { "Meta Direct" }
-                settingsStore.metaApiVersion = apiVersion.text.toString().trim().ifBlank { "v23.0" }
-                settingsStore.pageId = pageId.text.toString().trim()
-                settingsStore.userAccessToken = userToken.text.toString().trim()
-                settingsStore.pageAccessToken = pageToken.text.toString().trim()
-                settingsStore.defaultPostUrl = defaultUrl.text.toString().trim()
-                settingsStore.minimumVerified = minVerified.text.toString().toIntOrNull() ?: 2
-                settingsStore.standardWeight = standardWeight.text.toString().toDoubleOrNull() ?: 1.0
-                settingsStore.bonusWeight = bonusWeight.text.toString().toDoubleOrNull() ?: 1.15
                 settingsStore.updateManifestUrl = updateUrl.text.toString().trim()
                 toast("Settings saved")
             }
@@ -741,14 +461,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun stateIcon(state: VerificationState) = when (state) {
-        VerificationState.VERIFIED -> "✓"
-        VerificationState.NOT_FOUND -> "✕"
-        VerificationState.UNKNOWN -> "?"
-    }
 
-    private fun statusColor(status: String) = if (status.startsWith("Loaded")) Ui.BLUE else if (status.startsWith("Unavailable") || status.contains("missing", true)) Ui.RED else Ui.MUTED
-    private fun saveEngagement() = engagementStore.save(engagementScans)
 
     private fun persist() = store.save(giveaways)
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
