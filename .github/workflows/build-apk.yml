@@ -24,12 +24,12 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug
+      - name: Build release APK
+        run: gradle :app:assembleRelease
 
-      - name: Upload APK
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Officer-J-Giveaway-v1.1.9-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Officer-J-Giveaway-v1.1.10-release
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
